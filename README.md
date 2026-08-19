@@ -40,6 +40,16 @@ For remote bootstrap, fill `PANEL_*` and any non-empty node entries such as `DE1
 
 The optimizer uses the OpenAI Responses API with `store=false`, low reasoning effort, a stable prompt cache key, and strict JSON Schema output through `text.format`. See [API.md](API.md) and [SECURITY.md](SECURITY.md).
 
+## Support the project
+
+If Pars2Ray saves you time or helps your infrastructure, consider supporting its continued development. Contributions help cover maintenance, testing, and infrastructure costs.
+
+```text
+UQCWzDFlNgoLT55ZvtGC13W5zxwkJzwdBnh8Zv-IeYvX5pFc
+```
+
+Every contribution is appreciated. Using, starring, and sharing the project also helps a lot.
+
 ## Verification
 
 ```bash
