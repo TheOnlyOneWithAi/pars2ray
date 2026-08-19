@@ -24,7 +24,7 @@ One-line installer for Ubuntu/Debian (review `deploy/install.sh` before running 
 curl -fsSL https://raw.githubusercontent.com/parsahoseini549-star/pars2ray/main/deploy/install.sh | sudo bash
 ```
 
-The installer installs Docker/Compose when needed, generates missing secrets, preserves an existing `.env`, starts Master/Worker, runs migrations through the container entrypoint, and waits for `/health`. Set `PARS2RAY_ADMIN_PASSWORD` or `PARS2RAY_INSTALL_DIR` before the command to customize the install.
+The installer installs Docker/Compose when needed, generates missing secrets, preserves an existing `.env`, starts Master/Worker, runs migrations through the container entrypoint, and waits for `/health`. To pass custom values through `sudo`, use: `PARS2RAY_INSTALL_DIR=/srv/pars2ray PARS2RAY_ADMIN_PASSWORD='change-me' sudo -E bash -c 'curl -fsSL https://raw.githubusercontent.com/parsahoseini549-star/pars2ray/main/deploy/install.sh | bash'`.
 
 ```bash
 cp .env.example .env

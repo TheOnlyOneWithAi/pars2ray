@@ -24,7 +24,7 @@ tests/        детерминированные backend-тесты
 curl -fsSL https://raw.githubusercontent.com/parsahoseini549-star/pars2ray/main/deploy/install.sh | sudo bash
 ```
 
-Скрипт при необходимости устанавливает Docker/Compose, создаёт отсутствующие секреты, сохраняет существующий `.env`, запускает Master и Worker и ждёт успешного ответа `/health`. Для настройки используйте `PARS2RAY_ADMIN_PASSWORD` или `PARS2RAY_INSTALL_DIR` перед командой.
+Скрипт при необходимости устанавливает Docker/Compose, создаёт отсутствующие секреты, сохраняет существующий `.env`, запускает Master и Worker и ждёт успешного ответа `/health`. Для передачи собственных значений через `sudo` используйте шаблон: `PARS2RAY_INSTALL_DIR=/srv/pars2ray PARS2RAY_ADMIN_PASSWORD='change-me' sudo -E bash -c 'curl -fsSL https://raw.githubusercontent.com/parsahoseini549-star/pars2ray/main/deploy/install.sh | bash'`.
 
 ```bash
 cp .env.example .env
