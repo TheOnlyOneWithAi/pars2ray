@@ -18,6 +18,14 @@ tests/        deterministic backend tests
 
 ## Quick start
 
+One-line installer for Ubuntu/Debian (review `deploy/install.sh` before running in production):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/parsahoseini549-star/pars2ray/main/deploy/install.sh | sudo bash
+```
+
+The installer installs Docker/Compose when needed, generates missing secrets, preserves an existing `.env`, starts Master/Worker, runs migrations through the container entrypoint, and waits for `/health`. Set `PARS2RAY_ADMIN_PASSWORD` or `PARS2RAY_INSTALL_DIR` before the command to customize the install.
+
 ```bash
 cp .env.example .env
 # replace all replace-with-* values

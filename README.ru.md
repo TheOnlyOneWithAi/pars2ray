@@ -18,6 +18,14 @@ tests/        детерминированные backend-тесты
 
 ## Быстрый запуск
 
+Установка одной командой на Ubuntu/Debian (перед production-запуском проверьте `deploy/install.sh`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/parsahoseini549-star/pars2ray/main/deploy/install.sh | sudo bash
+```
+
+Скрипт при необходимости устанавливает Docker/Compose, создаёт отсутствующие секреты, сохраняет существующий `.env`, запускает Master и Worker и ждёт успешного ответа `/health`. Для настройки используйте `PARS2RAY_ADMIN_PASSWORD` или `PARS2RAY_INSTALL_DIR` перед командой.
+
 ```bash
 cp .env.example .env
 # замените все значения replace-with-*

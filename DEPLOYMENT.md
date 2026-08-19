@@ -2,6 +2,14 @@
 
 ## Compose deployment
 
+For a fresh Ubuntu/Debian host, the complete installer is available as one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/parsahoseini549-star/pars2ray/main/deploy/install.sh | sudo bash
+```
+
+Review the installer before execution when applying organizational supply-chain policy. It is idempotent for a clean Pars2Ray checkout and preserves an existing `.env` by creating a timestamped backup.
+
 1. Copy `.env.example` to `.env`.
 2. Generate secrets with `openssl rand -hex 32` and set `JWT_SECRET` and `MASTER_SECRET`.
 3. Set a strong `POSTGRES_PASSWORD` and `ADMIN_PASSWORD`.

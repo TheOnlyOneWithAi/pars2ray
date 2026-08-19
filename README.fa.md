@@ -18,6 +18,14 @@ tests/        تست‌های قطعی backend
 
 ## شروع سریع
 
+نصب کامل یک‌خطی روی Ubuntu/Debian (قبل از اجرای production فایل `deploy/install.sh` را بررسی کنید):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/parsahoseini549-star/pars2ray/main/deploy/install.sh | sudo bash
+```
+
+اسکریپت در صورت نیاز Docker/Compose را نصب می‌کند، secretهای ناقص را می‌سازد، `.env` موجود را حفظ می‌کند، Master و Worker را بالا می‌آورد و تا پاسخ موفق `/health` صبر می‌کند. برای شخصی‌سازی می‌توانید قبل از دستور متغیرهای `PARS2RAY_ADMIN_PASSWORD` یا `PARS2RAY_INSTALL_DIR` را تنظیم کنید.
+
 ```bash
 cp .env.example .env
 # تمام مقادیر replace-with-* را تغییر دهید
