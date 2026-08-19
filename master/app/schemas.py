@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class ORMModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=12, max_length=256)
+
+
+class TokenPair(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_in: int
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=32)
+
+
+class UserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=80, pattern=r"^[a-zA-Z0-9_.-]+$")
+    email: str | None = Field(default=None, max_length=254)
+    password: str = Field(min_length=12, max_length=256)
+    role: Literal["SUPER_ADMIN", "ADMIN", "OPERATOR", "RESELLER", "USER"] = "USER"
+    is_active: bool = True
+
+
+class UserUpdate(BaseModel):
+    email: str | None = Field(default=None, max_length=254)
+    role: Literal["SUPER_ADMIN", "ADMIN", "OPERATOR", "RESELLER", "USER"] | None = None
+    is_active: bool | None = None
+
+
+class UserOut(ORMModel):
+    id: int
+    username: str
+    email: str | None
+    role: str
+    is_active: bool
+    created_at: datetime
+    last_login_at: datetime | None
+
+
+class NodeRegisterRequest(BaseModel):
+    node_key: str = Field(min_length=2, max_length=40, pattern=r"^[A-Z]{2}\d{0,3}$")
+    country: str = Field(min_length=2, max_length=2)
+    endpoint: str = Field(min_length=8, max_length=255)
+    agent_token: str = Field(min_length=32, max_length=256)
+    agent_version: str = Field(default="unknown", max_length=64)
+
+    @field_validator("country")
+    @classmethod
+    def uppercase_country(cls, value: str) -> str:
+        return value.upper()
+
+    @field_validator("endpoint")
+    @classmethod
+    def valid_endpoint(cls, value: str) -> str:
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("endpoint must use http or https")
+        return value.rstrip("/")
+
+
+class NodeOut(ORMModel):
+    id: int
+    node_key: str
+    country: str
+    endpoint: str
+    status: str
+    score: float
+    cpu_percent: float
+    memory_percent: float
+    traffic_rx_bytes: int
+    traffic_tx_bytes: int
+    core: str
+    core_version: str
+    capabilities: dict[str, Any]
+    last_seen_at: datetime | None
+    created_at: datetime
+
+
+class BenchmarkRequest(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=443, ge=1, le=65535)
+    attempts: int = Field(default=5, ge=1, le=20)
+    timeout_seconds: float = Field(default=3.0, ge=0.2, le=15.0)
+
+
+class RouteCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    node_keys: list[str] = Field(min_length=1, max_length=20)
+    core: Literal["xray", "sing-box"] = "xray"
+    protocol: Literal["vless", "vmess", "trojan", "shadowsocks", "hysteria2"] = "vless"
+    transport: Literal["tcp", "grpc", "websocket", "httpupgrade", "xhttp", "quic"] = "tcp"
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class RouteOut(ORMModel):
+    id: int
+    name: str
+    node_keys: list[str]
+    core: str
+    protocol: str
+    transport: str
+    status: str
+    score: float
+    is_active: bool
+    is_golden: bool
+    consecutive_wins: int
+    updated_at: datetime
+
+
+class ExperimentCreate(BaseModel):
+    candidate_id: str = Field(min_length=1, max_length=80)
+    route_hash: str = Field(min_length=8, max_length=128)
+    config_hash: str = Field(min_length=8, max_length=128)
+    node_keys: list[str] = Field(min_length=1, max_length=20)
+    core: str = Field(max_length=32)
+    protocol: str = Field(max_length=64)
+    transport: str = Field(max_length=64)
+    score: float = Field(ge=0, le=100)
+    latency_ms: float = Field(default=0, ge=0)
+    jitter_ms: float = Field(default=0, ge=0)
+    packet_loss_percent: float = Field(default=0, ge=0, le=100)
+    throughput_mbps: float = Field(default=0, ge=0)
+    stability_percent: float = Field(default=0, ge=0, le=100)
+    level: Literal["GOLDEN", "VERIFIED", "EXPERIMENTAL"] = "EXPERIMENTAL"
+    decision: str = Field(default="KEEP", max_length=24)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class OptimizerRequest(BaseModel):
+    current_score: float = Field(ge=0, le=100)
+    previous_score: float | None = Field(default=None, ge=0, le=100)
+    anomaly: bool = False
+    new_method: bool = False
+    route_failed: bool = False
+    optimization_requested: bool = False
+    current_route: dict[str, Any] = Field(default_factory=dict)
+    candidates: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+
+
+class SystemSettingUpdate(BaseModel):
+    value: str = Field(max_length=4000)
+
+
+class PlanCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    quota_gb: float = Field(ge=0)
+    duration_days: int = Field(ge=1, le=3650)
+    max_devices: int = Field(ge=1, le=100)
+    price_minor: int = Field(ge=0)
+
+
+class SubscriptionCreate(BaseModel):
+    user_id: int = Field(gt=0)
+    plan_id: int = Field(gt=0)
+    node_keys: list[str] = Field(default_factory=list, max_length=20)

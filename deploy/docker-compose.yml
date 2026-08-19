@@ -1,0 +1,73 @@
+name: pars2ray
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pars2ray
+      POSTGRES_USER: pars2ray
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pars2ray_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pars2ray -d pars2ray"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [pars2ray]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - pars2ray_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [pars2ray]
+
+  master:
+    build:
+      context: ..
+      dockerfile: master/Dockerfile
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://pars2ray:${POSTGRES_PASSWORD}@db:5432/pars2ray
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "${PANEL_HTTP_PORT:-8000}:8000"
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [pars2ray]
+
+  worker:
+    build:
+      context: ..
+      dockerfile: master/Dockerfile
+    restart: unless-stopped
+    command: ["./scripts/start-worker.sh"]
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://pars2ray:${POSTGRES_PASSWORD}@db:5432/pars2ray
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    networks: [pars2ray]
+
+volumes:
+  pars2ray_db:
+  pars2ray_redis:
+networks:
+  pars2ray:

@@ -1,0 +1,4 @@
+export type Page = 'Dashboard' | 'Nodes' | 'Routes' | 'Protocols' | 'Experiments' | 'Optimizer' | 'Users' | 'Subscriptions' | 'Billing' | 'Settings'
+export type Node = { id: number; node_key: string; country: string; endpoint: string; status: string; score: number; cpu_percent: number; memory_percent: number; traffic_rx_bytes: number; traffic_tx_bytes: number; core: string; core_version: string }
+export type Dashboard = { node_count: number; online_nodes: number; network_health: number; traffic: { rx_bytes: number; tx_bytes: number }; current_best_route: string | null; ai_status: string; mode: string; user_count: number; subscription_count: number }
+export type Route = { id: number; name: string; node_keys: string[]; core: string; protocol: string; transport: string; status: string; score: number; is_active: boolean; is_golden: boolean; consecutive_wins: number; updated_at: string }
