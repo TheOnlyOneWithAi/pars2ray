@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError, VerifyMismatchError
 from cryptography.fernet import Fernet, InvalidToken
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError
 
 from app.core.config import settings
 
@@ -47,7 +48,7 @@ def decode_access_token(value: str) -> dict | None:
         if claims.get("typ") != "access":
             return None
         return claims
-    except JWTError:
+    except InvalidTokenError:
         return None
 
 
