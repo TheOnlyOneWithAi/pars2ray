@@ -6,6 +6,8 @@ FastAPI generates the authoritative OpenAPI 3.1 contract at `/openapi.json`; int
 
 `POST /api/v1/auth/login` returns a short-lived access token and a refresh token. Send `Authorization: Bearer <access_token>` or `X-API-Key: <api-key>`. Refresh tokens are one-time rotated by `POST /api/v1/auth/refresh`.
 
+Create an API key with `POST /api/v1/api-keys` and a JSON body such as `{"name":"deploy","scopes":["read"],"expires_in_days":90}`. The raw key is returned once. Use `GET /api/v1/api-keys` to review redacted metadata and `DELETE /api/v1/api-keys/{id}` to revoke a key. Supported scopes are `read`, `write`, `admin`, and `*`; an empty scope list keeps the user's RBAC boundary without adding a scope restriction. Expired or revoked keys are rejected.
+
 ## Resource groups
 
 | Group | Endpoints |
@@ -32,3 +34,5 @@ Bootstrap sends `X-Master-Secret` once to `POST /api/v1/nodes/register`. The Mas
 ## OpenAI decision contract
 
 The internal AI gateway sends a Responses API request with `store=false` and `text.format.type=json_schema`. The returned object is constrained to `KEEP`, `TEST`, `CANARY`, `SWITCH`, or `ROLLBACK` and is always passed through the local validator.
+
+Requests are gated locally before the provider call. A stable prompt-cache key is reused, variable telemetry is bounded and placed after the stable instructions, and no call is made when there is no candidate set to evaluate.

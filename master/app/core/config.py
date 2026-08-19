@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False)
 
     app_name: str = "Pars2Ray Enterprise"
-    app_version: str = "2.1.0"
+    app_version: str = "2.2.0"
     environment: str = "production"
     debug: bool = False
     database_url: str = "postgresql+psycopg://pars2ray:change-me@db:5432/pars2ray"
@@ -28,13 +28,14 @@ class Settings(BaseSettings):
     worker_poll_seconds: int = 10
     agent_request_timeout_seconds: int = 10
     openai_api_key: str = ""
-    openai_model: str = "gpt-5.6-luna"
+    openai_model: str = "gpt-5.6"
     openai_base_url: str = "https://api.openai.com/v1"
+    openai_request_timeout_seconds: float = 15.0
     ai_enabled: bool = True
     ai_min_score_change: float = 5.0
     ai_switch_min_improvement: float = 10.0
     ai_required_wins: int = 3
-    ai_max_output_tokens: int = 500
+    ai_max_output_tokens: int = 180
     ai_prompt_cache_key: str = "pars2ray-optimizer-v2"
     national_mode_enabled: bool = True
     national_failure_threshold: int = 3

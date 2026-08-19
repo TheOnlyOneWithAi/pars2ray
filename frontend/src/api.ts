@@ -82,5 +82,5 @@ export const api = {
   settings: () => request<SystemSetting[]>('/api/v1/system/settings'),
   updateSetting: (key: string, value: string) => request<{ ok: boolean }>(`/api/v1/system/settings/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
   nationalMode: () => request<NationalMode>('/api/v1/national-mode'),
-  createApiKey: (name: string, scopes: string[]) => request<{ key: string; warning: string }>(`/api/v1/api-keys?name=${encodeURIComponent(name)}`, { method: 'POST', body: JSON.stringify(scopes) }),
+  createApiKey: (name: string, scopes: string[]) => request<{ key: string; warning: string }>(`/api/v1/api-keys`, { method: 'POST', body: JSON.stringify({ name, scopes }) }),
 }

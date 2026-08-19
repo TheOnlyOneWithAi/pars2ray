@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from fastapi import Depends, Header, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.security import decode_access_token, token_hash
@@ -16,17 +18,30 @@ def bearer_value(authorization: str | None) -> str | None:
 
 
 def current_user(
+    request: Request,
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> User:
     if x_api_key:
-        key = db.scalar(select(ApiKey).where(ApiKey.key_hash == token_hash(x_api_key), ApiKey.revoked_at.is_(None)))
+        now = __import__("datetime").datetime.utcnow()
+        key = db.scalar(select(ApiKey).where(
+            ApiKey.key_hash == token_hash(x_api_key),
+            ApiKey.revoked_at.is_(None),
+            or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > now),
+        ))
         if key:
             user = db.get(User, key.user_id)
             if user and user.is_active:
-                key.last_used_at = __import__("datetime").datetime.utcnow()
-                db.commit()
+                request.state.auth_method = "api_key"
+                request.state.api_key_scopes = frozenset(key.scopes or [])
+                if key.scopes:
+                    required_scope = "read" if request.method in {"GET", "HEAD", "OPTIONS"} else "write"
+                    if required_scope not in key.scopes and "admin" not in key.scopes and "*" not in key.scopes:
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="api_key_scope_denied")
+                if key.last_used_at is None or key.last_used_at <= now - timedelta(minutes=5):
+                    key.last_used_at = now
+                    db.commit()
                 return user
     token = bearer_value(authorization)
     claims = decode_access_token(token) if token else None
@@ -35,6 +50,8 @@ def current_user(
     user = db.scalar(select(User).where(User.username == claims["sub"], User.is_active.is_(True)))
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+    request.state.auth_method = "jwt"
+    request.state.api_key_scopes = frozenset()
     return user
 
 

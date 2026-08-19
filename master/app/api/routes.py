@@ -4,7 +4,7 @@ import secrets
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from sqlalchemy import desc, func, select
+from sqlalchemy import case, desc, func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, request_ip, require_roles
@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.core.security import encrypt_secret, hash_password, random_token, token_hash, utcnow, verify_password
 from app.db.base import get_db
 from app.models.entities import ApiKey, AuditLog, Decision, Experiment, Metric, Node, Plan, RefreshToken, ResearchFinding, Role, Route, Subscription, SystemSetting, SystemState, Traffic, User
-from app.schemas import BenchmarkRequest, ExperimentCreate, LoginRequest, NodeOut, NodeRegisterRequest, OptimizerRequest, PlanCreate, RefreshRequest, RouteCreate, RouteOut, SubscriptionCreate, SystemSettingUpdate, TokenPair, UserCreate, UserOut, UserUpdate
+from app.schemas import ApiKeyCreate, ApiKeyOut, AuditLogOut, BenchmarkRequest, DecisionOut, ExperimentCreate, ExperimentOut, LoginRequest, MetricOut, NodeOut, NodeRegisterRequest, OptimizerRequest, PlanCreate, PlanOut, RefreshRequest, ResearchFindingOut, RouteCreate, RouteOut, SubscriptionCreate, SubscriptionOut, SystemSettingUpdate, TokenPair, UserCreate, UserOut, UserUpdate
 from app.services import agent_client
 from app.services.audit import record
 from app.services.auth import authenticate, ensure_seed, issue_tokens, rotate_refresh
@@ -20,7 +20,7 @@ from app.services.benchmark import score_measurement
 from app.services.candidate_engine import generate
 from app.services.gate import evaluate_gate
 from app.services.national_mode import national_engine
-from app.services.openai_optimizer import analyze
+from app.services.openai_optimizer import analyze, safe_context
 from app.services.telemetry import hourly_traffic
 from app.services.validator import validate_candidate
 
@@ -29,6 +29,17 @@ router = APIRouter(prefix="/api/v1")
 
 def role(*names: str):
     return Depends(require_roles(*names))
+
+
+def _known_node_keys(db: Session, node_keys: list[str]) -> list[str]:
+    normalized = list(dict.fromkeys(key.strip().upper() for key in node_keys if key.strip()))
+    if len(normalized) != len(node_keys):
+        raise HTTPException(status_code=422, detail="node_keys_must_be_unique_and_non_empty")
+    known = set(db.scalars(select(Node.node_key).where(Node.node_key.in_(normalized))).all())
+    missing = sorted(set(normalized) - known)
+    if missing:
+        raise HTTPException(status_code=422, detail={"code": "unknown_nodes", "nodes": missing})
+    return normalized
 
 
 @router.get("/health", tags=["system"])
@@ -68,19 +79,36 @@ def logout(payload: RefreshRequest, db: Session = Depends(get_db), user: User = 
 
 @router.get("/dashboard", tags=["system"])
 def dashboard(db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
-    nodes = db.scalars(select(Node)).all()
-    online = [node for node in nodes if node.status == "ONLINE"]
-    active = db.scalar(select(Route).where(Route.is_active.is_(True)))
+    stats = db.execute(select(
+        func.count(Node.id),
+        func.coalesce(func.sum(Node.traffic_rx_bytes), 0),
+        func.coalesce(func.sum(Node.traffic_tx_bytes), 0),
+        func.coalesce(func.avg(Node.score), 0),
+        func.coalesce(func.sum(case((Node.status == "ONLINE", 1), else_=0)), 0),
+    )).one()
+    active = db.scalar(select(Route).where(Route.is_active.is_(True)).limit(1))
     state = db.get(SystemState, 1)
-    traffic_rx = sum(node.traffic_rx_bytes for node in nodes)
-    traffic_tx = sum(node.traffic_tx_bytes for node in nodes)
-    return {"node_count": len(nodes), "online_nodes": len(online), "network_health": round(sum(n.score for n in nodes) / len(nodes), 1) if nodes else 0, "traffic": {"rx_bytes": traffic_rx, "tx_bytes": traffic_tx}, "current_best_route": active.name if active else None, "ai_status": state.ai_status if state else "DISABLED", "mode": state.mode if state else "NORMAL", "user_count": db.scalar(select(func.count(User.id))) or 0, "subscription_count": db.scalar(select(func.count(Subscription.id)).where(Subscription.enabled.is_(True))) or 0}
+    return {"node_count": int(stats[0] or 0), "online_nodes": int(stats[4] or 0), "network_health": round(float(stats[3] or 0), 1), "traffic": {"rx_bytes": int(stats[1] or 0), "tx_bytes": int(stats[2] or 0)}, "current_best_route": active.name if active else None, "ai_status": state.ai_status if state else "DISABLED", "mode": state.mode if state else "NORMAL", "user_count": db.scalar(select(func.count(User.id))) or 0, "subscription_count": db.scalar(select(func.count(Subscription.id)).where(Subscription.enabled.is_(True))) or 0}
 
 
 @router.get("/dashboard/telemetry", tags=["system"])
 def dashboard_telemetry(hours: int = 24, db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[dict]:
     bounded_hours = min(max(hours, 1), 168)
     cutoff = utcnow() - timedelta(hours=bounded_hours)
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        bucket = func.date_trunc("hour", Traffic.sampled_at).label("bucket")
+        rows = db.execute(
+            select(
+                bucket,
+                func.coalesce(func.sum(Traffic.rx_bytes), 0),
+                func.coalesce(func.sum(Traffic.tx_bytes), 0),
+                func.count(Traffic.id),
+            )
+            .where(Traffic.sampled_at >= cutoff)
+            .group_by(bucket)
+            .order_by(bucket)
+        ).all()
+        return [{"timestamp": f"{point.isoformat()}Z", "rx_bytes": max(int(rx or 0), 0), "tx_bytes": max(int(tx or 0), 0), "samples": int(samples or 0)} for point, rx, tx, samples in rows]
     samples = db.scalars(select(Traffic).where(Traffic.sampled_at >= cutoff).order_by(Traffic.sampled_at)).all()
     return hourly_traffic(samples)
 
@@ -90,18 +118,18 @@ def dashboard_traffic_breakdown(hours: int = 24, db: Session = Depends(get_db), 
     bounded_hours = min(max(hours, 1), 168)
     cutoff = utcnow() - timedelta(hours=bounded_hours)
     rows = db.execute(
-        select(Traffic, Node.node_key, Node.country)
+        select(
+            Node.node_key,
+            Node.country,
+            func.coalesce(func.sum(Traffic.rx_bytes), 0).label("rx_bytes"),
+            func.coalesce(func.sum(Traffic.tx_bytes), 0).label("tx_bytes"),
+            func.count(Traffic.id).label("samples"),
+        )
         .join(Node, Traffic.node_id == Node.id)
         .where(Traffic.sampled_at >= cutoff)
-        .order_by(Traffic.sampled_at)
+        .group_by(Node.node_key, Node.country)
     ).all()
-    totals: dict[str, dict[str, int | str]] = {}
-    for sample, node_key, country in rows:
-        item = totals.setdefault(node_key, {"node_key": node_key, "country": country, "rx_bytes": 0, "tx_bytes": 0, "samples": 0})
-        item["rx_bytes"] += max(int(sample.rx_bytes), 0)
-        item["tx_bytes"] += max(int(sample.tx_bytes), 0)
-        item["samples"] += 1
-    return sorted(totals.values(), key=lambda item: int(item["rx_bytes"]) + int(item["tx_bytes"]), reverse=True)
+    return sorted(({"node_key": node_key, "country": country, "rx_bytes": max(int(rx_bytes or 0), 0), "tx_bytes": max(int(tx_bytes or 0), 0), "samples": int(samples or 0)} for node_key, country, rx_bytes, tx_bytes, samples in rows), key=lambda item: int(item["rx_bytes"]) + int(item["tx_bytes"]), reverse=True)
 
 
 @router.post("/nodes/register", tags=["nodes"])
@@ -138,7 +166,7 @@ def get_node(node_key: str, db: Session = Depends(get_db), user: User = Depends(
     return node
 
 
-@router.get("/nodes/{node_key}/metrics", tags=["nodes"], response_model=None)
+@router.get("/nodes/{node_key}/metrics", tags=["nodes"], response_model=list[MetricOut])
 def node_metrics(node_key: str, limit: int = 60, db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Metric]:
     node = db.scalar(select(Node).where(Node.node_key == node_key))
     if not node:
@@ -230,7 +258,8 @@ def list_routes(search: str = Query(default="", max_length=100), protocol: str =
 def create_route(payload: RouteCreate, request: Request, db: Session = Depends(get_db), user: User = role("SUPER_ADMIN", "ADMIN", "OPERATOR")) -> dict:
     if db.scalar(select(Route).where(Route.name == payload.name)):
         raise HTTPException(status_code=409, detail="route_name_exists")
-    route = Route(name=payload.name, node_keys=payload.node_keys, core=payload.core, protocol=payload.protocol, transport=payload.transport, config_enc=encrypt_secret(str(payload.config)))
+    node_keys = _known_node_keys(db, payload.node_keys)
+    route = Route(name=payload.name, node_keys=node_keys, core=payload.core, protocol=payload.protocol, transport=payload.transport, config_enc=encrypt_secret(str(payload.config)))
     db.add(route)
     record(db, user, "route.create", "route", payload.name, request_ip(request))
     db.commit()
@@ -253,12 +282,12 @@ def activate_route(route_id: int, request: Request, db: Session = Depends(get_db
     return {"ok": True, "route_id": route.id, "status": route.status}
 
 
-@router.get("/experiments", tags=["experiments"], response_model=None)
+@router.get("/experiments", tags=["experiments"], response_model=list[ExperimentOut])
 def list_experiments(limit: int = 100, db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Experiment]:
     return list(db.scalars(select(Experiment).order_by(desc(Experiment.created_at)).limit(min(max(limit, 1), 500))).all())
 
 
-@router.post("/experiments", tags=["experiments"], response_model=None)
+@router.post("/experiments", tags=["experiments"], response_model=ExperimentOut)
 def create_experiment(payload: ExperimentCreate, request: Request, db: Session = Depends(get_db), user: User = role("SUPER_ADMIN", "ADMIN", "OPERATOR")) -> Experiment:
     experiment = Experiment(**payload.model_dump(exclude={"metadata"}), metadata_json=payload.metadata)
     db.add(experiment)
@@ -289,7 +318,13 @@ async def optimizer_decide(payload: OptimizerRequest, request: Request, db: Sess
         db.add(Decision(current_score=payload.current_score, proposed_score=payload.current_score, action="KEEP", candidate_id=None, reason=gate.reason, ai_called=False))
         db.commit()
         return {**decision, "ai_called": False}
-    context = {"current_route": payload.current_route, "current_score": payload.current_score, "previous_score": payload.previous_score, "trigger": gate.reason, "candidates": payload.candidates[:20]}
+    if not payload.candidates:
+        decision = {"action": "KEEP", "candidate_id": None, "confidence": 1.0, "reason": "No bounded candidate set is available; local policy retained the active route."}
+        db.add(Decision(current_score=payload.current_score, proposed_score=payload.current_score, action="KEEP", candidate_id=None, reason=decision["reason"], ai_called=False))
+        record(db, user, "optimizer.decide", "optimizer", "", request_ip(request), {"action": "KEEP", "ai_called": False, "reason": "no_candidates"})
+        db.commit()
+        return {**decision, "ai_called": False}
+    context = safe_context({"current_route": payload.current_route, "current_score": payload.current_score, "previous_score": payload.previous_score, "trigger": gate.reason, "candidates": payload.candidates})
     ai_called = False
     usage: dict = {}
     try:
@@ -307,7 +342,7 @@ async def optimizer_decide(payload: OptimizerRequest, request: Request, db: Sess
     return {**decision, "ai_called": ai_called, "usage": {"input_tokens": int(usage.get("input_tokens", 0) or 0), "cached_tokens": int(details.get("cached_tokens", 0) or 0), "output_tokens": int(usage.get("output_tokens", 0) or 0)}}
 
 
-@router.get("/optimizer/decisions", tags=["optimizer"], response_model=None)
+@router.get("/optimizer/decisions", tags=["optimizer"], response_model=list[DecisionOut])
 def optimizer_decisions(limit: int = 100, db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Decision]:
     return list(db.scalars(select(Decision).order_by(desc(Decision.created_at)).limit(min(max(limit, 1), 500))).all())
 
@@ -363,12 +398,12 @@ def update_user(user_id: int, payload: UserUpdate, request: Request, db: Session
     return user
 
 
-@router.get("/plans", tags=["billing"], response_model=None)
+@router.get("/plans", tags=["billing"], response_model=list[PlanOut])
 def list_plans(db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Plan]:
     return list(db.scalars(select(Plan).order_by(Plan.name)).all())
 
 
-@router.post("/plans", tags=["billing"], response_model=None)
+@router.post("/plans", tags=["billing"], response_model=PlanOut)
 def create_plan(payload: PlanCreate, db: Session = Depends(get_db), user: User = role("SUPER_ADMIN", "ADMIN")) -> Plan:
     plan = Plan(**payload.model_dump())
     db.add(plan)
@@ -377,7 +412,7 @@ def create_plan(payload: PlanCreate, db: Session = Depends(get_db), user: User =
     return plan
 
 
-@router.get("/subscriptions", tags=["subscriptions"], response_model=None)
+@router.get("/subscriptions", tags=["subscriptions"], response_model=list[SubscriptionOut])
 def list_subscriptions(enabled: bool | None = Query(default=None), limit: int = Query(default=200, ge=1, le=500), db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Subscription]:
     query = select(Subscription)
     if enabled is not None:
@@ -391,25 +426,49 @@ def create_subscription(payload: SubscriptionCreate, db: Session = Depends(get_d
     target = db.get(User, payload.user_id)
     if not plan or not target:
         raise HTTPException(status_code=404, detail="user_or_plan_not_found")
+    if not plan.enabled:
+        raise HTTPException(status_code=409, detail="plan_disabled")
+    node_keys = _known_node_keys(db, payload.node_keys) if payload.node_keys else []
     raw = random_token()
-    sub = Subscription(user_id=target.id, plan_id=plan.id, token_hash=token_hash(raw), node_keys=payload.node_keys, expires_at=utcnow() + timedelta(days=plan.duration_days))
+    sub = Subscription(user_id=target.id, plan_id=plan.id, token_hash=token_hash(raw), node_keys=node_keys, expires_at=utcnow() + timedelta(days=plan.duration_days))
     db.add(sub)
     db.commit()
     db.refresh(sub)
+    record(db, actor, "subscription.create", "subscription", str(sub.id), metadata={"plan_id": plan.id, "node_count": len(node_keys)})
+    db.commit()
     return {"id": sub.id, "token": raw, "expires_at": sub.expires_at, "node_keys": sub.node_keys}
 
 
 @router.post("/api-keys", tags=["auth"])
-def create_api_key(name: str, scopes: list[str] | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
+def create_api_key(payload: ApiKeyCreate, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
+    if not payload.name.strip():
+        raise HTTPException(status_code=422, detail="api_key_name_required")
     raw = "omk_" + random_token(32)
-    key = ApiKey(user_id=user.id, name=name[:100], key_prefix=raw[:12], key_hash=token_hash(raw), scopes=scopes or [])
+    key = ApiKey(user_id=user.id, name=payload.name.strip(), key_prefix=raw[:12], key_hash=token_hash(raw), scopes=sorted(set(payload.scopes)), expires_at=utcnow() + timedelta(days=payload.expires_in_days) if payload.expires_in_days else None)
     db.add(key)
     record(db, user, "api_key.create", "api_key", key.key_prefix)
     db.commit()
     return {"id": key.id, "name": key.name, "key": raw, "warning": "Store this key now; it is not shown again."}
 
 
-@router.get("/audit-logs", tags=["system"], response_model=None)
+@router.get("/api-keys", response_model=list[ApiKeyOut], tags=["auth"])
+def list_api_keys(db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[ApiKey]:
+    return list(db.scalars(select(ApiKey).where(ApiKey.user_id == user.id).order_by(desc(ApiKey.created_at))).all())
+
+
+@router.delete("/api-keys/{key_id}", tags=["auth"])
+def revoke_api_key(key_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
+    key = db.get(ApiKey, key_id)
+    if not key or key.user_id != user.id:
+        raise HTTPException(status_code=404, detail="api_key_not_found")
+    if key.revoked_at is None:
+        key.revoked_at = utcnow()
+        record(db, user, "api_key.revoke", "api_key", key.key_prefix, request_ip(request))
+        db.commit()
+    return {"ok": True, "id": key.id, "revoked": True}
+
+
+@router.get("/audit-logs", tags=["system"], response_model=list[AuditLogOut])
 def audit_logs(limit: int = 100, db: Session = Depends(get_db), user: User = role("SUPER_ADMIN", "ADMIN")) -> list[AuditLog]:
     return list(db.scalars(select(AuditLog).order_by(desc(AuditLog.created_at)).limit(min(max(limit, 1), 500))).all())
 
@@ -441,6 +500,6 @@ def national_mode(db: Session = Depends(get_db), user: User = Depends(current_us
     return {"mode": state.mode, "failures": state.international_failures, "successes": state.international_successes}
 
 
-@router.get("/research", tags=["system"], response_model=None)
+@router.get("/research", tags=["system"], response_model=list[ResearchFindingOut])
 def research(limit: int = 100, db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[ResearchFinding]:
     return list(db.scalars(select(ResearchFinding).order_by(desc(ResearchFinding.created_at)).limit(min(max(limit, 1), 500))).all())

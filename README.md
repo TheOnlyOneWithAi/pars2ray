@@ -41,12 +41,14 @@ For remote bootstrap, fill `PANEL_*` and any non-empty node entries such as `DE1
 ## Design guarantees
 
 - Access JWTs are short-lived; refresh tokens are rotated and stored hashed.
+- API keys support expiry and `read`/`write`/`admin` scopes; empty scopes retain the owning user's RBAC boundary.
 - Passwords use Argon2id. Secrets are encrypted at rest with a key derived from `MASTER_SECRET`.
 - Agent commands are an explicit allowlist: `GET_STATUS`, `GET_METRICS`, `GET_CORE_STATUS`, `RUN_BENCHMARK`, `APPLY_CONFIG`, `ROLLBACK`, `RESTART_SERVICE`.
 - No arbitrary shell endpoint exists. Core execution is restricted to known Xray/sing-box validation and restart commands.
 - Route configuration and node tokens are never returned by normal API list responses.
 - Optimizer transitions pass local gate and validator checks; AI cannot directly change production.
 - Without OpenAI access, experiment memory, golden configurations, local rules, and bounded fallback candidates continue to work.
+- Telemetry history is aggregated in PostgreSQL and the console refreshes high-change data separately from stable route data.
 
 ## AI integration
 

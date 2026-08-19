@@ -11,7 +11,7 @@ REPOSITORIES = {"xray": "XTLS/Xray-core", "sing-box": "SagerNet/sing-box"}
 
 async def fetch_releases() -> list[dict]:
     results: list[dict] = []
-    async with httpx.AsyncClient(timeout=15, headers={"Accept": "application/vnd.github+json", "User-Agent": "Pars2Ray-Enterprise/2.0"}) as client:
+    async with httpx.AsyncClient(timeout=15, headers={"Accept": "application/vnd.github+json", "User-Agent": "Pars2Ray-Enterprise/2.2"}) as client:
         for source, repository in REPOSITORIES.items():
             response = await client.get(f"https://api.github.com/repos/{repository}/releases/latest")
             if response.status_code != 200:

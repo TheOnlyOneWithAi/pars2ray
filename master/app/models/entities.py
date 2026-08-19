@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String, Table, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Table, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -156,6 +156,8 @@ class Metric(Base):
     stability_percent: Mapped[float] = mapped_column(Float, default=0)
     measured_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
+    __table_args__ = (Index("ix_metrics_node_measured_at", "node_id", "measured_at"),)
+
 
 class Traffic(Base):
     __tablename__ = "traffic"
@@ -165,6 +167,8 @@ class Traffic(Base):
     rx_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     tx_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     sampled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (Index("ix_traffic_node_sampled_at", "node_id", "sampled_at"),)
 
 
 class Plan(Base):

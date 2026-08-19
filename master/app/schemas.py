@@ -119,6 +119,92 @@ class RouteOut(ORMModel):
     updated_at: datetime
 
 
+class ExperimentOut(ORMModel):
+    id: int
+    candidate_id: str
+    node_keys: list[str]
+    core: str
+    protocol: str
+    transport: str
+    score: float
+    latency_ms: float
+    jitter_ms: float
+    packet_loss_percent: float
+    throughput_mbps: float
+    stability_percent: float
+    level: str
+    decision: str
+    created_at: datetime
+
+
+class DecisionOut(ORMModel):
+    id: int
+    current_score: float
+    proposed_score: float
+    action: str
+    candidate_id: str | None
+    reason: str
+    ai_called: bool
+    model: str
+    input_tokens: int
+    cached_tokens: int
+    output_tokens: int
+    created_at: datetime
+
+
+class MetricOut(ORMModel):
+    id: int
+    latency_ms: float
+    jitter_ms: float
+    packet_loss_percent: float
+    throughput_mbps: float
+    cpu_percent: float
+    memory_percent: float
+    stability_percent: float
+    measured_at: datetime
+
+
+class PlanOut(ORMModel):
+    id: int
+    name: str
+    quota_gb: float
+    duration_days: int
+    max_devices: int
+    price_minor: int
+    enabled: bool
+
+
+class SubscriptionOut(ORMModel):
+    id: int
+    user_id: int
+    plan_id: int
+    node_keys: list[str]
+    enabled: bool
+    used_gb: float
+    expires_at: datetime
+    created_at: datetime
+
+
+class AuditLogOut(ORMModel):
+    id: int
+    actor_user_id: int | None
+    action: str
+    resource_type: str
+    resource_id: str
+    ip_address: str
+    created_at: datetime
+
+
+class ResearchFindingOut(ORMModel):
+    id: int
+    source: str
+    version: str
+    title: str
+    notes: str
+    url: str
+    created_at: datetime
+
+
 class ExperimentCreate(BaseModel):
     candidate_id: str = Field(min_length=1, max_length=80)
     route_hash: str = Field(min_length=8, max_length=128)
@@ -151,6 +237,23 @@ class OptimizerRequest(BaseModel):
 
 class SystemSettingUpdate(BaseModel):
     value: str = Field(max_length=4000)
+
+
+class ApiKeyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    scopes: list[Literal["read", "write", "admin", "*"]] = Field(default_factory=list, max_length=20)
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+class ApiKeyOut(ORMModel):
+    id: int
+    name: str
+    key_prefix: str
+    scopes: list[str]
+    last_used_at: datetime | None
+    expires_at: datetime | None
+    revoked_at: datetime | None
+    created_at: datetime
 
 
 class PlanCreate(BaseModel):
