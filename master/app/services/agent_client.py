@@ -27,6 +27,10 @@ async def metrics(node):
     return await command(node, "GET_METRICS")
 
 
+async def core_status(node):
+    return await command(node, "GET_CORE_STATUS")
+
+
 async def benchmark(node, payload):
     return await command(node, "RUN_BENCHMARK", payload)
 

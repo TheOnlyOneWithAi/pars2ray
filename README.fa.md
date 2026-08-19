@@ -36,13 +36,15 @@ docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 
 پنل شامل تله‌متری زنده ترافیک، عملیات نودها، فعال‌سازی مسیر، نمای پروتکل‌ها، ارتقای آزمایش‌ها، اجرای کنترل‌شده Optimizer، مدیریت کاربران RBAC، اشتراک‌ها، پلن‌ها، API Key، تنظیمات اجرایی و Audit Log است. زبان‌های انگلیسی، فارسی با چیدمان RTL و روسی از داخل پنل انتخاب می‌شوند. تمام جدول‌ها، نمودارها و عملیات از API واقعی Master استفاده می‌کنند و فرانت‌اند دادهٔ نمونه تولید نمی‌کند.
 
+مقایسه و تصمیم‌های انتقال قابلیت‌های X-UI/3X-UI در [XUI_COMPARISON.md](XUI_COMPARISON.md) ثبت شده است.
+
 ## قابلیت‌های اصلی
 
 - احراز هویت JWT، چرخش Refresh Token، API Key و RBAC
 - نقش‌های Super Admin، Admin، Operator، Reseller و User
 - مدیریت پویا و نامحدود نودها از طریق متغیرهای محیطی مانند `DE1`، `DE2` و `NL1`
 - Heartbeat، جمع‌آوری Metrics، Benchmark، همگام‌سازی تنظیمات، Rollback و گزارش نسخه
-- پشتیبانی از Xray و sing-box با فرمان‌های از پیش تعریف‌شده
+- پشتیبانی از Xray و sing-box با فرمان‌های از پیش تعریف‌شده، شامل وضعیت واقعی Core و سرویس
 - ذخیره تاریخچه آزمایش‌ها در سطوح `GOLDEN`، `VERIFIED` و `EXPERIMENTAL`
 - بهینه‌ساز مبتنی بر Rule Engine، حافظه آزمایش‌ها، Validator و Canary
 - مدیریت کاربران، پلن‌ها، اشتراک‌ها، ترافیک، API Key و Audit Log

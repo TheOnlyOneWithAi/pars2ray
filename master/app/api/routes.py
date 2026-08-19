@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
@@ -85,6 +85,25 @@ def dashboard_telemetry(hours: int = 24, db: Session = Depends(get_db), user: Us
     return hourly_traffic(samples)
 
 
+@router.get("/dashboard/traffic-breakdown", tags=["system"])
+def dashboard_traffic_breakdown(hours: int = 24, db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[dict]:
+    bounded_hours = min(max(hours, 1), 168)
+    cutoff = utcnow() - timedelta(hours=bounded_hours)
+    rows = db.execute(
+        select(Traffic, Node.node_key, Node.country)
+        .join(Node, Traffic.node_id == Node.id)
+        .where(Traffic.sampled_at >= cutoff)
+        .order_by(Traffic.sampled_at)
+    ).all()
+    totals: dict[str, dict[str, int | str]] = {}
+    for sample, node_key, country in rows:
+        item = totals.setdefault(node_key, {"node_key": node_key, "country": country, "rx_bytes": 0, "tx_bytes": 0, "samples": 0})
+        item["rx_bytes"] += max(int(sample.rx_bytes), 0)
+        item["tx_bytes"] += max(int(sample.tx_bytes), 0)
+        item["samples"] += 1
+    return sorted(totals.values(), key=lambda item: int(item["rx_bytes"]) + int(item["tx_bytes"]), reverse=True)
+
+
 @router.post("/nodes/register", tags=["nodes"])
 def register_node(payload: NodeRegisterRequest, x_master_secret: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict:
     if not x_master_secret or not secrets.compare_digest(x_master_secret, settings.master_secret):
@@ -102,8 +121,13 @@ def register_node(payload: NodeRegisterRequest, x_master_secret: str | None = He
 
 
 @router.get("/nodes", tags=["nodes"], response_model=list[NodeOut])
-def list_nodes(db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Node]:
-    return list(db.scalars(select(Node).order_by(Node.country, Node.node_key)).all())
+def list_nodes(search: str = Query(default="", max_length=100), status_filter: str = Query(default="", alias="status", max_length=24), limit: int = Query(default=200, ge=1, le=500), db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Node]:
+    query = select(Node)
+    if search:
+        query = query.where((Node.node_key.ilike(f"%{search}%")) | (Node.country.ilike(f"%{search}%")) | (Node.endpoint.ilike(f"%{search}%")))
+    if status_filter:
+        query = query.where(Node.status == status_filter.upper())
+    return list(db.scalars(query.order_by(Node.country, Node.node_key).limit(limit)).all())
 
 
 @router.get("/nodes/{node_key}", tags=["nodes"], response_model=NodeOut)
@@ -122,6 +146,20 @@ def node_metrics(node_key: str, limit: int = 60, db: Session = Depends(get_db), 
     bounded_limit = min(max(limit, 1), 500)
     rows = db.scalars(select(Metric).where(Metric.node_id == node.id).order_by(desc(Metric.measured_at)).limit(bounded_limit)).all()
     return list(reversed(rows))
+
+
+@router.get("/nodes/{node_key}/core-status", tags=["nodes"])
+async def node_core_status(node_key: str, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
+    node = db.scalar(select(Node).where(Node.node_key == node_key))
+    if not node:
+        raise HTTPException(status_code=404, detail="node_not_found")
+    try:
+        result = await agent_client.core_status(node)
+    except Exception:
+        node.status = "OFFLINE"
+        db.commit()
+        raise HTTPException(status_code=502, detail="node_unreachable")
+    return {"node_key": node.node_key, **result}
 
 
 async def _node_action(node_key: str, action: str, db: Session, user: User, request: Request, payload: dict | None = None) -> dict:
@@ -177,8 +215,15 @@ def remove_node(node_key: str, request: Request, db: Session = Depends(get_db), 
 
 
 @router.get("/routes", tags=["routes"], response_model=list[RouteOut])
-def list_routes(db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Route]:
-    return list(db.scalars(select(Route).order_by(desc(Route.is_active), desc(Route.score))).all())
+def list_routes(search: str = Query(default="", max_length=100), protocol: str = Query(default="", max_length=64), status_filter: str = Query(default="", alias="status", max_length=24), limit: int = Query(default=200, ge=1, le=500), db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Route]:
+    query = select(Route)
+    if search:
+        query = query.where(Route.name.ilike(f"%{search}%"))
+    if protocol:
+        query = query.where(Route.protocol == protocol.lower())
+    if status_filter:
+        query = query.where(Route.status == status_filter.upper())
+    return list(db.scalars(query.order_by(desc(Route.is_active), desc(Route.score)).limit(limit)).all())
 
 
 @router.post("/routes", tags=["routes"], response_model=RouteOut)
@@ -274,8 +319,13 @@ def optimizer_candidates(db: Session = Depends(get_db), user: User = Depends(cur
 
 
 @router.get("/users", response_model=list[UserOut], tags=["users"])
-def list_users(db: Session = Depends(get_db), user: User = role("SUPER_ADMIN", "ADMIN")) -> list[User]:
-    return list(db.scalars(select(User).order_by(desc(User.id))).all())
+def list_users(search: str = Query(default="", max_length=100), role_filter: str = Query(default="", alias="role", max_length=32), limit: int = Query(default=200, ge=1, le=500), db: Session = Depends(get_db), user: User = role("SUPER_ADMIN", "ADMIN")) -> list[User]:
+    query = select(User)
+    if search:
+        query = query.where((User.username.ilike(f"%{search}%")) | (User.email.ilike(f"%{search}%")))
+    if role_filter:
+        query = query.join(User.roles).where(Role.name == role_filter.upper())
+    return list(db.scalars(query.order_by(desc(User.id)).limit(limit)).unique().all())
 
 
 @router.post("/users", response_model=UserOut, tags=["users"])
@@ -328,8 +378,11 @@ def create_plan(payload: PlanCreate, db: Session = Depends(get_db), user: User =
 
 
 @router.get("/subscriptions", tags=["subscriptions"], response_model=None)
-def list_subscriptions(db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Subscription]:
-    return list(db.scalars(select(Subscription).order_by(desc(Subscription.created_at))).all())
+def list_subscriptions(enabled: bool | None = Query(default=None), limit: int = Query(default=200, ge=1, le=500), db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Subscription]:
+    query = select(Subscription)
+    if enabled is not None:
+        query = query.where(Subscription.enabled.is_(enabled))
+    return list(db.scalars(query.order_by(desc(Subscription.created_at)).limit(limit)).all())
 
 
 @router.post("/subscriptions", tags=["subscriptions"])

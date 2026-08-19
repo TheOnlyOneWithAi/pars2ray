@@ -14,6 +14,8 @@ Browser ──HTTPS──> Master API ──SQL──> PostgreSQL
 
 The Master owns identity, policy, experiment memory, route state, subscriptions, billing metadata, and audit records. Node Agents are stateless control adapters with local rollback state. Agents do not ship a frontend, database, Swagger UI, arbitrary command endpoint, or SSH credentials.
 
+The agent command surface is an explicit allowlist. `GET_CORE_STATUS` uses only fixed `systemctl is-active` arguments and local metadata; it does not accept shell input. The panel receives status and counters, never raw Xray/sing-box configuration or client credentials.
+
 ## Decision pipeline
 
 1. Agents expose heartbeat, metrics, health, and bounded benchmark results.

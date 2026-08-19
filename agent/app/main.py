@@ -12,7 +12,7 @@ import socket as socket_module
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from app.services.core_manager import apply, capability, restart_service, rollback
+from app.services.core_manager import apply, capability, core_status, restart_service, rollback
 
 AGENT_VERSION = os.getenv("AGENT_VERSION", "2.0.0")
 NODE_KEY = os.getenv("NODE_KEY", "UNSET")
@@ -79,6 +79,7 @@ def benchmark(request: BenchmarkRequest, x_agent_token: str | None = Header(defa
 class Command(StrEnum):
     GET_STATUS = "GET_STATUS"
     GET_METRICS = "GET_METRICS"
+    GET_CORE_STATUS = "GET_CORE_STATUS"
     RUN_BENCHMARK = "RUN_BENCHMARK"
     APPLY_CONFIG = "APPLY_CONFIG"
     ROLLBACK = "ROLLBACK"
@@ -97,6 +98,8 @@ def command(request: CommandRequest, x_agent_token: str | None = Header(default=
         return {"ok": True, "status": health(), "capabilities": capability()}
     if request.command == Command.GET_METRICS:
         return metrics(x_agent_token)
+    if request.command == Command.GET_CORE_STATUS:
+        return {"ok": True, **core_status()}
     if request.command == Command.RUN_BENCHMARK:
         return benchmark(BenchmarkRequest(**request.payload), x_agent_token)
     if request.command == Command.APPLY_CONFIG:

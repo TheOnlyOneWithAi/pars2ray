@@ -98,5 +98,6 @@ export type AuditLog = { id: number; actor_user_id: number | null; action: strin
 export type SystemSetting = { key: string; is_secret: boolean; updated_at: string }
 export type NationalMode = { mode: string; failures: number; successes: number }
 export type TelemetryPoint = { timestamp: string; rx_bytes: number; tx_bytes: number; samples: number }
+export type TrafficBreakdown = { node_key: string; country: string; rx_bytes: number; tx_bytes: number; samples: number }
 export type NodeMetric = { id: number; latency_ms: number; jitter_ms: number; packet_loss_percent: number; throughput_mbps: number; cpu_percent: number; memory_percent: number; stability_percent: number; measured_at: string }
 export type TokenPair = { access_token: string; refresh_token: string; token_type: string; expires_in: number }

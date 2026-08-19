@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { api, hasAccess, setSession } from './api'
 import { direction, translate, type TranslationKey } from './i18n'
 import { BillingPage, DashboardPage, ExperimentsPage, NodesPage, OptimizerPage, ProtocolsPage, RoutesPage, SettingsPage, SubscriptionsPage, UsersPage } from './pages'
-import type { Dashboard, Locale, Node, Page, Route, TelemetryPoint } from './types'
+import type { Dashboard, Locale, Node, Page, Route, TelemetryPoint, TrafficBreakdown } from './types'
 import { Icon, Spinner } from './ui'
 
 const pages: Page[] = ['dashboard','nodes','routes','protocols','experiments','optimizer','users','subscriptions','billing','settings']
@@ -19,6 +19,7 @@ export default function App() {
   const [nodes, setNodes] = useState<Node[]>([])
   const [routes, setRoutes] = useState<Route[]>([])
   const [telemetry, setTelemetry] = useState<TelemetryPoint[]>([])
+  const [trafficBreakdown, setTrafficBreakdown] = useState<TrafficBreakdown[]>([])
   const [loading, setLoading] = useState(hasAccess())
   const [sidebar, setSidebar] = useState(false)
   const [toasts, setToasts] = useState<{ id: number; message: string; kind: 'success'|'error' }[]>([])
@@ -31,8 +32,8 @@ export default function App() {
   }, [])
 
   const loadCore = useCallback(async () => {
-    const [dashboardResult, nodesResult, routesResult, telemetryResult] = await Promise.all([api.dashboard(), api.nodes(), api.routes(), api.telemetry().catch(() => [])])
-    setDashboard(dashboardResult); setNodes(nodesResult); setRoutes(routesResult); setTelemetry(telemetryResult)
+    const [dashboardResult, nodesResult, routesResult, telemetryResult, breakdownResult] = await Promise.all([api.dashboard(), api.nodes(), api.routes(), api.telemetry().catch(() => []), api.trafficBreakdown().catch(() => [])])
+    setDashboard(dashboardResult); setNodes(nodesResult); setRoutes(routesResult); setTelemetry(telemetryResult); setTrafficBreakdown(breakdownResult)
   }, [])
 
   useEffect(() => {
@@ -56,7 +57,7 @@ export default function App() {
 
   const common = { t, locale, notify }
   let content
-  if (page === 'dashboard') content = <DashboardPage {...common} dashboard={dashboard} nodes={nodes} routes={routes} telemetry={telemetry} openPage={setPage}/>
+  if (page === 'dashboard') content = <DashboardPage {...common} dashboard={dashboard} nodes={nodes} routes={routes} telemetry={telemetry} trafficBreakdown={trafficBreakdown} openPage={setPage}/>
   else if (page === 'nodes') content = <NodesPage {...common} nodes={nodes} reload={loadCore}/>
   else if (page === 'routes') content = <RoutesPage {...common} routes={routes} nodes={nodes} reload={loadCore}/>
   else if (page === 'protocols') content = <ProtocolsPage {...common} routes={routes}/>

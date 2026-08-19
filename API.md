@@ -11,17 +11,19 @@ FastAPI generates the authoritative OpenAPI 3.1 contract at `/openapi.json`; int
 | Group | Endpoints |
 |---|---|
 | Auth | `/api/v1/auth/*`, `/api/v1/api-keys` |
-| Nodes | `/api/v1/nodes`, metric history, registration, benchmark, restart, drain, rollback |
+| Nodes | `/api/v1/nodes`, search/filter/limit, metric history, Core Status, registration, benchmark, restart, drain, rollback |
 | Routes | `/api/v1/routes` and activation |
 | Experiments | `/api/v1/experiments` and promotion |
 | Optimizer | `/api/v1/optimizer/decide`, decisions, bounded candidates |
 | Users | `/api/v1/users` |
 | Subscriptions/Billing | `/api/v1/subscriptions`, `/api/v1/plans` |
-| System | dashboard, traffic telemetry, health, audit logs, settings, national mode, research |
+| System | dashboard, traffic telemetry/breakdown, health, audit logs, settings, national mode, research |
 
 ## Control panel telemetry
 
 `GET /api/v1/dashboard/telemetry?hours=24` returns persisted RX/TX samples aggregated into UTC hourly buckets. The range is bounded to 1–168 hours. `GET /api/v1/nodes/{node_key}/metrics?limit=60` returns measured latency, loss, throughput, stability, CPU, and memory history for a selected node. The limit is bounded to 1–500 rows.
+
+`GET /api/v1/dashboard/traffic-breakdown?hours=24` returns redacted per-node RX/TX totals from persisted samples. `GET /api/v1/nodes/{node_key}/core-status` asks the Node Agent for the installed core, version, fixed service state, and active-config metadata. It never returns the configuration body or credentials.
 
 ## Node registration
 

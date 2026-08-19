@@ -29,6 +29,25 @@ def capability() -> dict:
     return {"installed": installed, "active_core": active_core, "core_version": version, "protocols": ["vless", "vmess", "trojan", "shadowsocks", "hysteria2"], "transports": ["tcp", "grpc", "websocket", "httpupgrade", "xhttp", "quic"]}
 
 
+def core_status() -> dict:
+    """Return fixed, non-shell core diagnostics for the Master panel."""
+    state = capability()
+    active_core = state["active_core"]
+    service_state = "NOT_INSTALLED"
+    if active_core != "none":
+        service = active_core
+        if shutil.which("systemctl"):
+            try:
+                result = subprocess.run(["systemctl", "is-active", service], capture_output=True, text=True, timeout=3, check=False)
+                service_state = result.stdout.strip() or "UNKNOWN"
+            except (OSError, subprocess.TimeoutExpired):
+                service_state = "UNKNOWN"
+        else:
+            service_state = "UNKNOWN"
+    config_metadata = {"present": ACTIVE.exists(), "bytes": ACTIVE.stat().st_size if ACTIVE.exists() else 0, "updated_at": ACTIVE.stat().st_mtime if ACTIVE.exists() else None}
+    return {"active_core": active_core, "core_version": state["core_version"], "installed": state["installed"], "service_state": service_state, "config": config_metadata}
+
+
 def _validate(core: str) -> tuple[bool, str]:
     if core == "xray":
         command = ["xray", "run", "-test", "-config", str(ACTIVE)]

@@ -1,4 +1,4 @@
-import type { AuditLog, Candidate, Dashboard, Decision, Experiment, NationalMode, Node, NodeMetric, Plan, Route, Subscription, SystemSetting, TelemetryPoint, TokenPair, User } from './types'
+import type { AuditLog, Candidate, Dashboard, Decision, Experiment, NationalMode, Node, NodeMetric, Plan, Route, Subscription, SystemSetting, TelemetryPoint, TokenPair, TrafficBreakdown, User } from './types'
 
 const base = import.meta.env.VITE_API_URL ?? ''
 const ACCESS_KEY = 'pars2ray.access'
@@ -57,8 +57,10 @@ export const api = {
   logout: () => request<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST', body: JSON.stringify({ refresh_token: refresh }) }).finally(clearSession),
   dashboard: () => request<Dashboard>('/api/v1/dashboard'),
   telemetry: (hours = 24) => request<TelemetryPoint[]>(`/api/v1/dashboard/telemetry?hours=${hours}`),
+  trafficBreakdown: (hours = 24) => request<TrafficBreakdown[]>(`/api/v1/dashboard/traffic-breakdown?hours=${hours}`),
   nodes: () => request<Node[]>('/api/v1/nodes'),
   nodeMetrics: (nodeKey: string, limit = 60) => request<NodeMetric[]>(`/api/v1/nodes/${nodeKey}/metrics?limit=${limit}`),
+  coreStatus: (nodeKey: string) => request<Record<string, unknown>>(`/api/v1/nodes/${nodeKey}/core-status`),
   routes: () => request<Route[]>('/api/v1/routes'),
   createRoute: (payload: { name: string; node_keys: string[]; core: string; protocol: string; transport: string; config: Record<string, unknown> }) => request<Route>('/api/v1/routes', { method: 'POST', body: JSON.stringify(payload) }),
   activateRoute: (id: number) => request<{ ok: boolean }>(`/api/v1/routes/${id}/activate`, { method: 'POST' }),
