@@ -1,34 +1,98 @@
-import { useEffect, useMemo, useState } from 'react'
-import { api, hasAccess } from './api'
-import type { Dashboard, Node, Page, Route } from './types'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { api, hasAccess, setSession } from './api'
+import { direction, translate, type TranslationKey } from './i18n'
+import { BillingPage, DashboardPage, ExperimentsPage, NodesPage, OptimizerPage, ProtocolsPage, RoutesPage, SettingsPage, SubscriptionsPage, UsersPage } from './pages'
+import type { Dashboard, Locale, Node, Page, Route, TelemetryPoint } from './types'
+import { Icon, Spinner } from './ui'
 
-const pages: Page[] = ['Dashboard', 'Nodes', 'Routes', 'Protocols', 'Experiments', 'Optimizer', 'Users', 'Subscriptions', 'Billing', 'Settings']
-const icons: Record<Page, string> = { Dashboard: '▦', Nodes: '◇', Routes: '⌁', Protocols: '◌', Experiments: '◎', Optimizer: '✦', Users: '♙', Subscriptions: '▤', Billing: '◫', Settings: '⚙' }
+const pages: Page[] = ['dashboard','nodes','routes','protocols','experiments','optimizer','users','subscriptions','billing','settings']
 
-function fmtBytes(value: number) { if (!value) return '0 B'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; const i = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}` }
-function Badge({ value }: { value: string }) { return <span className={`badge ${value.toLowerCase().replaceAll('_', '-')}`}>{value.replaceAll('_', ' ')}</span> }
-function MetricCard({ label, value, hint, accent }: { label: string; value: string | number; hint: string; accent: string }) { return <div className="metric-card"><div className="metric-top"><span>{label}</span><i style={{ background: accent }} /></div><strong>{value}</strong><small>{hint}</small></div> }
+function initialPage(): Page {
+  const hash = location.hash.replace('#/', '') as Page
+  return pages.includes(hash) ? hash : 'dashboard'
+}
 
 export default function App() {
-  const [page, setPage] = useState<Page>('Dashboard')
+  const [page, setPageState] = useState<Page>(initialPage)
+  const [locale, setLocaleState] = useState<Locale>((localStorage.getItem('pars2ray.locale') as Locale) || 'en')
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [nodes, setNodes] = useState<Node[]>([])
   const [routes, setRoutes] = useState<Route[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const authed = hasAccess()
+  const [telemetry, setTelemetry] = useState<TelemetryPoint[]>([])
+  const [loading, setLoading] = useState(hasAccess())
+  const [sidebar, setSidebar] = useState(false)
+  const [toasts, setToasts] = useState<{ id: number; message: string; kind: 'success'|'error' }[]>([])
+  const t = useCallback((key: TranslationKey) => translate(locale, key), [locale])
 
-  useEffect(() => { if (!authed) { setLoading(false); return } void Promise.all([api.dashboard(), api.nodes(), api.routes()]).then(([d, n, r]) => { setDashboard(d); setNodes(n); setRoutes(r) }).catch(e => setError(e.message)).finally(() => setLoading(false)) }, [authed])
-  const onlinePercent = useMemo(() => dashboard && dashboard.node_count ? Math.round(dashboard.online_nodes / dashboard.node_count * 100) : 0, [dashboard])
+  const notify = useCallback((message: string, kind: 'success'|'error' = 'success') => {
+    const id = Date.now() + Math.random()
+    setToasts(items => [...items, { id, message, kind }])
+    window.setTimeout(() => setToasts(items => items.filter(item => item.id !== id)), 4500)
+  }, [])
 
-  if (!authed) return <Login />
-  return <div className="shell"><aside className="sidebar"><div className="brand"><span className="brand-mark">P</span><div><strong>Pars2Ray</strong><small>ENTERPRISE CONTROL</small></div></div><nav>{pages.map(item => <button key={item} className={page === item ? 'nav-item active' : 'nav-item'} onClick={() => setPage(item)}><span>{icons[item]}</span>{item}</button>)}</nav><div className="side-footer"><div className="connection"><span className="live-dot" /> Master online</div><small>v2.0.0 · Production</small></div></aside><main className="main"><header className="topbar"><div><span className="eyebrow">CONTROL PLANE / {page.toUpperCase()}</span><h1>{page}</h1></div><div className="top-actions"><span className="mode"><i className="live-dot" /> {dashboard?.mode ?? 'NORMAL'}</span><button className="icon-button" aria-label="Notifications">♢</button><div className="avatar">SA</div></div></header>{error && <div className="error-banner">{error}</div>}{loading ? <div className="loading">Loading control plane…</div> : page === 'Dashboard' ? <DashboardView dashboard={dashboard} nodes={nodes} onlinePercent={onlinePercent} /> : page === 'Nodes' ? <NodesView nodes={nodes} refresh={() => api.nodes().then(setNodes)} /> : page === 'Routes' ? <RoutesView routes={routes} /> : <GenericView page={page} />}</main></div>
+  const loadCore = useCallback(async () => {
+    const [dashboardResult, nodesResult, routesResult, telemetryResult] = await Promise.all([api.dashboard(), api.nodes(), api.routes(), api.telemetry().catch(() => [])])
+    setDashboard(dashboardResult); setNodes(nodesResult); setRoutes(routesResult); setTelemetry(telemetryResult)
+  }, [])
+
+  useEffect(() => {
+    document.documentElement.lang = locale
+    document.documentElement.dir = direction(locale)
+    localStorage.setItem('pars2ray.locale', locale)
+  }, [locale])
+
+  useEffect(() => {
+    if (!hasAccess()) { setLoading(false); return }
+    void loadCore().catch(error => notify(error instanceof Error ? error.message : t('failed'), 'error')).finally(() => setLoading(false))
+    const interval = window.setInterval(() => void loadCore().catch(() => undefined), 30000)
+    return () => window.clearInterval(interval)
+  }, [loadCore, notify, t])
+
+  function setPage(next: Page) { setPageState(next); location.hash = `/${next}`; setSidebar(false) }
+  function setLocale(next: Locale) { setLocaleState(next) }
+
+  if (!hasAccess()) return <Login locale={locale} setLocale={setLocale} t={t}/>
+  if (loading || !dashboard) return <div className="boot"><div className="logo-mark"><span>P</span></div><Spinner/><p>{t('loading')}</p></div>
+
+  const common = { t, locale, notify }
+  let content
+  if (page === 'dashboard') content = <DashboardPage {...common} dashboard={dashboard} nodes={nodes} routes={routes} telemetry={telemetry} openPage={setPage}/>
+  else if (page === 'nodes') content = <NodesPage {...common} nodes={nodes} reload={loadCore}/>
+  else if (page === 'routes') content = <RoutesPage {...common} routes={routes} nodes={nodes} reload={loadCore}/>
+  else if (page === 'protocols') content = <ProtocolsPage {...common} routes={routes}/>
+  else if (page === 'experiments') content = <ExperimentsPage {...common}/>
+  else if (page === 'optimizer') content = <OptimizerPage {...common} dashboard={dashboard}/>
+  else if (page === 'users') content = <UsersPage {...common}/>
+  else if (page === 'subscriptions') content = <SubscriptionsPage {...common}/>
+  else if (page === 'billing') content = <BillingPage {...common}/>
+  else content = <SettingsPage {...common}/>
+
+  return <div className="app-shell">
+    <aside className={`sidebar ${sidebar ? 'open' : ''}`}>
+      <div className="brand"><div className="logo-mark"><span>P</span></div><div><strong>Pars2Ray</strong><small>ENTERPRISE</small></div><button className="mobile-close" onClick={() => setSidebar(false)}><Icon name="close"/></button></div>
+      <nav>{pages.map(item => <button key={item} className={page === item ? 'active' : ''} onClick={() => setPage(item)}><Icon name={item}/><span>{t(item)}</span>{page === item && <i/>}</button>)}</nav>
+      <div className="sidebar-footer"><div><span className="live-dot"/><strong>{t('masterOnline')}</strong></div><small>v2.1.0 · {t('production')}</small></div>
+    </aside>
+    {sidebar && <button className="sidebar-scrim" aria-label="close" onClick={() => setSidebar(false)}/>} 
+    <main className="main">
+      <header className="topbar"><div className="title-group"><button className="menu-button" onClick={() => setSidebar(true)}><Icon name="menu"/></button><div><span className="breadcrumb">PARS2RAY / {t(page).toUpperCase()}</span><h1>{t(page)}</h1></div></div><div className="top-actions"><span className={`mode-indicator ${dashboard.mode.toLowerCase()}`}><i/>{dashboard.mode}</span><button className="icon-btn refresh-button" title={t('refresh')} onClick={() => void loadCore().then(() => notify(t('completed')))}><Icon name="refresh"/></button><LocalePicker locale={locale} setLocale={setLocale}/><details className="account-menu"><summary><span className="avatar">SA</span></summary><div><span>Super Admin</span><small>Control plane</small><button onClick={() => void api.logout().finally(() => location.reload())}>{t('signOut')}</button></div></details></div></header>
+      <div className="page-content">{content}</div>
+    </main>
+    <div className="toast-stack">{toasts.map(toast => <div className={`toast ${toast.kind}`} key={toast.id}><span>{toast.kind === 'success' ? <Icon name="check" size={16}/> : '!'}</span><p>{toast.message.replaceAll('_',' ')}</p><button onClick={() => setToasts(items => items.filter(item => item.id !== toast.id))}><Icon name="close" size={14}/></button></div>)}</div>
+  </div>
 }
 
-function Login() { return <div className="login-page"><div className="login-card"><div className="brand"><span className="brand-mark">P</span><div><strong>Pars2Ray</strong><small>ENTERPRISE CONTROL</small></div></div><h1>Sign in</h1><p>Control plane access</p><form onSubmit={e => { e.preventDefault(); const form = new FormData(e.currentTarget); void fetch('/api/v1/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: form.get('username'), password: form.get('password') }) }).then(r => r.json()).then(data => { if (data.access_token) { localStorage.setItem('pars2ray.access', data.access_token); location.reload() } else alert(data.detail ?? 'Sign in failed') }) }}><label>Username<input name="username" autoComplete="username" required /></label><label>Password<input name="password" type="password" autoComplete="current-password" required /></label><button className="primary wide">Sign in</button></form><small className="login-note">Authorized operators only</small></div></div> }
-function DashboardView({ dashboard, nodes, onlinePercent }: { dashboard: Dashboard | null; nodes: Node[]; onlinePercent: number }) { if (!dashboard) return <Empty />; return <><section className="metrics-grid"><MetricCard label="Nodes" value={`${dashboard.online_nodes}/${dashboard.node_count}`} hint={`${onlinePercent}% online`} accent="#36d399" /><MetricCard label="Network health" value={`${dashboard.network_health.toFixed(1)}%`} hint="Weighted live score" accent="#5b8cff" /><MetricCard label="Traffic" value={fmtBytes(dashboard.traffic.rx_bytes + dashboard.traffic.tx_bytes)} hint="Aggregate counters" accent="#b98cff" /><MetricCard label="AI status" value={dashboard.ai_status} hint="Decision gateway" accent="#f7b955" /></section><section className="content-grid"><div className="panel"><div className="panel-head"><div><span className="eyebrow">LIVE INVENTORY</span><h2>Node health</h2></div><button className="ghost">View all</button></div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Country</th><th>Status</th><th>CPU</th><th>RAM</th><th>Traffic</th><th>Score</th></tr></thead><tbody>{nodes.slice(0, 6).map(node => <tr key={node.node_key}><td className="strong">{node.node_key}</td><td><span className="country">{node.country}</span></td><td><Badge value={node.status} /></td><td><Progress value={node.cpu_percent} /></td><td><Progress value={node.memory_percent} /></td><td>{fmtBytes(node.traffic_rx_bytes + node.traffic_tx_bytes)}</td><td className="score">{node.score.toFixed(1)}</td></tr>)}</tbody></table>{!nodes.length && <Empty />}</div></div><div className="panel route-panel"><div className="panel-head"><div><span className="eyebrow">OPTIMIZER</span><h2>Route posture</h2></div><span className="status-indicator"><i className="live-dot" /> Protected</span></div><div className="route-score"><div className="score-ring"><strong>{dashboard.network_health.toFixed(0)}</strong><span>score</span></div><div><h3>{dashboard.current_best_route ?? 'No active route'}</h3><p>Current best route</p><Badge value={dashboard.mode} /></div></div><div className="mini-stat"><span>Fallback mode</span><strong>{dashboard.mode === 'NORMAL' ? 'Standby' : 'Active'}</strong></div><div className="mini-stat"><span>Subscriptions</span><strong>{dashboard.subscription_count}</strong></div></div></section></> }
-function NodesView({ nodes, refresh }: { nodes: Node[]; refresh: () => Promise<Node[]> }) { return <section className="panel page-panel"><div className="panel-head"><div><span className="eyebrow">INFRASTRUCTURE</span><h2>Managed nodes</h2></div><button className="primary" onClick={() => void refresh()}>Refresh</button></div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Country</th><th>Status</th><th>CPU</th><th>RAM</th><th>Traffic</th><th>Score</th><th>Actions</th></tr></thead><tbody>{nodes.map(node => <tr key={node.node_key}><td className="strong">{node.node_key}</td><td><span className="country">{node.country}</span></td><td><Badge value={node.status} /></td><td>{node.cpu_percent.toFixed(1)}%</td><td>{node.memory_percent.toFixed(1)}%</td><td>{fmtBytes(node.traffic_rx_bytes + node.traffic_tx_bytes)}</td><td className="score">{node.score.toFixed(1)}</td><td><div className="row-actions"><button className="small-action" onClick={() => alert(`${node.node_key} · ${node.core}`)}>View</button><button className="small-action" onClick={() => void api.command(node.node_key, 'benchmark')}>Benchmark</button><button className="small-action" onClick={() => void api.command(node.node_key, 'restart')}>Restart</button><button className="small-action" onClick={() => void api.command(node.node_key, 'drain')}>Drain</button><button className="small-action" onClick={() => void api.command(node.node_key, 'rollback')}>Rollback</button><button className="small-action" onClick={() => void api.remove(node.node_key).then(() => void refresh())}>Remove</button></div></td></tr>)}</tbody></table>{!nodes.length && <Empty />}</div></section> }
-function RoutesView({ routes }: { routes: Route[] }) { return <section className="panel page-panel"><div className="panel-head"><div><span className="eyebrow">TRAFFIC ENGINEERING</span><h2>Routes</h2></div><button className="primary">Create route</button></div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Protocol</th><th>Transport</th><th>Core</th><th>Status</th><th>Score</th><th>Wins</th></tr></thead><tbody>{routes.map(route => <tr key={route.id}><td className="strong">{route.name}</td><td>{route.protocol}</td><td>{route.transport}</td><td>{route.core}</td><td><Badge value={route.status} /></td><td className="score">{route.score.toFixed(1)}</td><td>{route.consecutive_wins}</td></tr>)}</tbody></table>{!routes.length && <Empty />}</div></section> }
-function GenericView({ page }: { page: Page }) { return <section className="panel page-panel empty-page"><div className="empty-icon">{icons[page]}</div><h2>{page}</h2><p>Connected to the Pars2Ray control plane.</p><button className="primary">Open {page.toLowerCase()}</button></section> }
-function Progress({ value }: { value: number }) { return <div className="progress"><span style={{ width: `${Math.min(value, 100)}%` }} /></div> }
-function Empty() { return <div className="empty">No records available</div> }
+function LocalePicker({ locale, setLocale }: { locale: Locale; setLocale: (locale: Locale) => void }) {
+  return <select className="locale-picker" value={locale} onChange={event => setLocale(event.target.value as Locale)} aria-label="Language"><option value="en">EN</option><option value="fa">فا</option><option value="ru">RU</option></select>
+}
+
+function Login({ locale, setLocale, t }: { locale: Locale; setLocale: (locale: Locale) => void; t: (key: TranslationKey) => string }) {
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const year = useMemo(() => new Date().getFullYear(), [])
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setSubmitting(true); setError(''); const form = new FormData(event.currentTarget)
+    try { setSession(await api.login(String(form.get('username')), String(form.get('password')))); location.reload() } catch (caught) { setError(caught instanceof Error ? caught.message : t('failed')); setSubmitting(false) }
+  }
+  return <div className="login-page"><div className="login-glow one"/><div className="login-glow two"/><section className="login-card"><header><div className="brand"><div className="logo-mark"><span>P</span></div><div><strong>Pars2Ray</strong><small>ENTERPRISE</small></div></div><LocalePicker locale={locale} setLocale={setLocale}/></header><div className="login-title"><span>{t('authorizedOnly')}</span><h1>{t('signIn')}</h1><p>{t('sessionAccess')}</p></div><form onSubmit={submit}><label><span>{t('username')}</span><input name="username" autoComplete="username" minLength={3} required autoFocus/></label><label><span>{t('password')}</span><input name="password" type="password" autoComplete="current-password" minLength={12} required/></label>{error && <p className="login-error">{error.replaceAll('_',' ')}</p>}<button className="button primary wide" disabled={submitting}>{submitting && <Spinner/>}{t('signIn')}</button></form><footer><span>© {year} Pars2Ray</span><span className="secure-session"><i/>{t('production')}</span></footer></section></div>
+}

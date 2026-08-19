@@ -21,6 +21,7 @@ from app.services.candidate_engine import generate
 from app.services.gate import evaluate_gate
 from app.services.national_mode import national_engine
 from app.services.openai_optimizer import analyze
+from app.services.telemetry import hourly_traffic
 from app.services.validator import validate_candidate
 
 router = APIRouter(prefix="/api/v1")
@@ -76,6 +77,14 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(current_user))
     return {"node_count": len(nodes), "online_nodes": len(online), "network_health": round(sum(n.score for n in nodes) / len(nodes), 1) if nodes else 0, "traffic": {"rx_bytes": traffic_rx, "tx_bytes": traffic_tx}, "current_best_route": active.name if active else None, "ai_status": state.ai_status if state else "DISABLED", "mode": state.mode if state else "NORMAL", "user_count": db.scalar(select(func.count(User.id))) or 0, "subscription_count": db.scalar(select(func.count(Subscription.id)).where(Subscription.enabled.is_(True))) or 0}
 
 
+@router.get("/dashboard/telemetry", tags=["system"])
+def dashboard_telemetry(hours: int = 24, db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[dict]:
+    bounded_hours = min(max(hours, 1), 168)
+    cutoff = utcnow() - timedelta(hours=bounded_hours)
+    samples = db.scalars(select(Traffic).where(Traffic.sampled_at >= cutoff).order_by(Traffic.sampled_at)).all()
+    return hourly_traffic(samples)
+
+
 @router.post("/nodes/register", tags=["nodes"])
 def register_node(payload: NodeRegisterRequest, x_master_secret: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict:
     if not x_master_secret or not secrets.compare_digest(x_master_secret, settings.master_secret):
@@ -103,6 +112,16 @@ def get_node(node_key: str, db: Session = Depends(get_db), user: User = Depends(
     if not node:
         raise HTTPException(status_code=404, detail="node_not_found")
     return node
+
+
+@router.get("/nodes/{node_key}/metrics", tags=["nodes"], response_model=None)
+def node_metrics(node_key: str, limit: int = 60, db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Metric]:
+    node = db.scalar(select(Node).where(Node.node_key == node_key))
+    if not node:
+        raise HTTPException(status_code=404, detail="node_not_found")
+    bounded_limit = min(max(limit, 1), 500)
+    rows = db.scalars(select(Metric).where(Metric.node_id == node.id).order_by(desc(Metric.measured_at)).limit(bounded_limit)).all()
+    return list(reversed(rows))
 
 
 async def _node_action(node_key: str, action: str, db: Session, user: User, request: Request, payload: dict | None = None) -> dict:

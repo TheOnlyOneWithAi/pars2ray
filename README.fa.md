@@ -26,6 +26,8 @@ docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 
 پس از اجرا، پنل در `http://localhost:8000/` در دسترس است. مستندات OpenAPI 3.1 نیز از مسیرهای `/docs`، `/redoc` و `/openapi.json` ارائه می‌شوند. حساب Super Admin اولیه از متغیرهای `ADMIN_USER`، `ADMIN_PASSWORD` و `ADMIN_EMAIL` ساخته می‌شود.
 
+پنل شامل تله‌متری زنده ترافیک، عملیات نودها، فعال‌سازی مسیر، نمای پروتکل‌ها، ارتقای آزمایش‌ها، اجرای کنترل‌شده Optimizer، مدیریت کاربران RBAC، اشتراک‌ها، پلن‌ها، API Key، تنظیمات اجرایی و Audit Log است. زبان‌های انگلیسی، فارسی با چیدمان RTL و روسی از داخل پنل انتخاب می‌شوند. تمام جدول‌ها، نمودارها و عملیات از API واقعی Master استفاده می‌کنند و فرانت‌اند دادهٔ نمونه تولید نمی‌کند.
+
 ## قابلیت‌های اصلی
 
 - احراز هویت JWT، چرخش Refresh Token، API Key و RBAC
@@ -71,7 +73,7 @@ UQCWzDFlNgoLT55ZvtGC13W5zxwkJzwdBnh8Zv-IeYvX5pFc
 ```bash
 PYTHONPATH=master pytest -q tests
 python -m compileall -q master/app agent/app installer
-cd frontend && npm install && npm run typecheck && npm run build
+cd frontend && npm ci && npm run typecheck && npm run build
 ```
 
 برای جزئیات بیشتر، فایل‌های [معماری](ARCHITECTURE.md)، [API](API.md)، [استقرار](DEPLOYMENT.md) و [امنیت](SECURITY.md) را ببینید.

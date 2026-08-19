@@ -1,7 +1,7 @@
 FROM node:22-alpine AS frontend-build
 WORKDIR /src/frontend
 COPY frontend/package*.json ./
-RUN npm install --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 

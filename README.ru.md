@@ -26,6 +26,8 @@ docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 
 После запуска панель доступна по адресу `http://localhost:8000/`. Документация OpenAPI 3.1 находится в `/docs`, `/redoc` и `/openapi.json`. Начальный Super Admin создаётся из `ADMIN_USER`, `ADMIN_PASSWORD` и `ADMIN_EMAIL`.
 
+Панель включает телеметрию трафика, операции с узлами, активацию маршрутов, обзор протоколов, повышение экспериментов, защищённый запуск Optimizer, управление пользователями RBAC, подписками, тарифами, API Key, настройками среды и Audit Log. В интерфейсе доступны английский, персидский с RTL и русский языки. Все таблицы, графики и действия используют реальные API Master; интерфейс не создаёт демонстрационные записи.
+
 ## Основные возможности
 
 - JWT-аутентификация, ротация Refresh Token, API Key и RBAC
@@ -71,7 +73,7 @@ UQCWzDFlNgoLT55ZvtGC13W5zxwkJzwdBnh8Zv-IeYvX5pFc
 ```bash
 PYTHONPATH=master pytest -q tests
 python -m compileall -q master/app agent/app installer
-cd frontend && npm install && npm run typecheck && npm run build
+cd frontend && npm ci && npm run typecheck && npm run build
 ```
 
 Дополнительная информация находится в документах [Architecture](ARCHITECTURE.md), [API](API.md), [Deployment](DEPLOYMENT.md) и [Security](SECURITY.md).

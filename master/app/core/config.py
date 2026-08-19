@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False)
 
     app_name: str = "Pars2Ray Enterprise"
-    app_version: str = "2.0.0"
+    app_version: str = "2.1.0"
     environment: str = "production"
     debug: bool = False
     database_url: str = "postgresql+psycopg://pars2ray:change-me@db:5432/pars2ray"

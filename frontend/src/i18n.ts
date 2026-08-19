@@ -1,0 +1,62 @@
+import type { Locale } from './types'
+
+const dictionaries = {
+  en: {
+    dashboard: 'Dashboard', nodes: 'Nodes', routes: 'Routes', protocols: 'Protocols', experiments: 'Experiments', optimizer: 'Optimizer', users: 'Users', subscriptions: 'Subscriptions', billing: 'Billing', settings: 'Settings',
+    controlPlane: 'Enterprise control plane', masterOnline: 'Master online', production: 'Production', overview: 'Overview', refresh: 'Refresh', search: 'Search', signOut: 'Sign out',
+    totalNodes: 'Total nodes', onlineNodes: 'Online nodes', networkHealth: 'Network health', totalTraffic: 'Total traffic', currentBestRoute: 'Current best route', aiStatus: 'AI status', activeSubscriptions: 'Active subscriptions',
+    networkTraffic: 'Network traffic', nodeHealth: 'Node health', routePosture: 'Route posture', noActiveRoute: 'No active route', protected: 'Protected', normal: 'Normal', national: 'National',
+    name: 'Name', country: 'Country', status: 'Status', cpu: 'CPU', memory: 'Memory', traffic: 'Traffic', score: 'Score', latency: 'Latency', core: 'Core', version: 'Version', lastSeen: 'Last seen', actions: 'Actions',
+    managedNodes: 'Managed nodes', allStatuses: 'All statuses', view: 'View', benchmark: 'Benchmark', restart: 'Restart', drain: 'Drain', rollback: 'Rollback', remove: 'Remove', endpoint: 'Endpoint', agent: 'Agent', capabilities: 'Capabilities',
+    trafficEngineering: 'Traffic engineering', createRoute: 'Create route', protocol: 'Protocol', transport: 'Transport', path: 'Path', wins: 'Wins', updated: 'Updated', activate: 'Activate', active: 'Active',
+    protocolInventory: 'Protocol inventory', routesCount: 'Routes', averageScore: 'Average score', bestScore: 'Best score',
+    experimentMemory: 'Experiment memory', level: 'Level', decision: 'Decision', loss: 'Loss', throughput: 'Throughput', stability: 'Stability', promote: 'Promote', golden: 'Golden', verified: 'Verified', experimental: 'Experimental',
+    decisionGateway: 'Decision gateway', runOptimization: 'Run optimization', currentScore: 'Current score', previousScore: 'Previous score', anomaly: 'Anomaly', newMethod: 'New method', routeFailed: 'Route failed', optimizationRequested: 'Manual request', candidate: 'Candidate', aiCalls: 'AI calls', localDecisions: 'Local decisions', decisionHistory: 'Decision history', reason: 'Reason', tokens: 'Tokens',
+    userManagement: 'User management', createUser: 'Create user', username: 'Username', email: 'Email', role: 'Role', created: 'Created', enabled: 'Enabled', disabled: 'Disabled', password: 'Password',
+    subscriptionManagement: 'Subscription management', createSubscription: 'Create subscription', user: 'User', plan: 'Plan', usage: 'Usage', expires: 'Expires', nodesAssigned: 'Nodes', revealOnce: 'Copy this token now. It will not be shown again.',
+    plans: 'Plans', createPlan: 'Create plan', quota: 'Quota', duration: 'Duration', devices: 'Devices', price: 'Price', days: 'days',
+    systemSettings: 'System settings', runtime: 'Runtime', security: 'Security', audit: 'Audit', nationalMode: 'National mode', internationalFailures: 'International failures', internationalSuccesses: 'International successes', optimizerEnabled: 'Optimizer enabled', minScoreChange: 'Minimum score change', save: 'Save', createApiKey: 'Create API key', keyName: 'Key name', auditEvents: 'Audit events', actor: 'Actor', resource: 'Resource', ipAddress: 'IP address',
+    cancel: 'Cancel', create: 'Create', confirm: 'Confirm', close: 'Close', noRecords: 'No records', loading: 'Loading control plane', completed: 'Completed', failed: 'Failed', confirmAction: 'Confirm action', irreversible: 'This action cannot be undone.', required: 'Required field',
+    signIn: 'Sign in', authorizedOnly: 'Authorized operators only', sessionAccess: 'Control plane access', language: 'Language', live: 'Live',
+  },
+  fa: {
+    dashboard: 'داشبورد', nodes: 'نودها', routes: 'مسیرها', protocols: 'پروتکل‌ها', experiments: 'آزمایش‌ها', optimizer: 'بهینه‌ساز', users: 'کاربران', subscriptions: 'اشتراک‌ها', billing: 'مالی', settings: 'تنظیمات',
+    controlPlane: 'مرکز کنترل سازمانی', masterOnline: 'مستر آنلاین', production: 'محیط عملیاتی', overview: 'نمای کلی', refresh: 'به‌روزرسانی', search: 'جست‌وجو', signOut: 'خروج',
+    totalNodes: 'کل نودها', onlineNodes: 'نودهای آنلاین', networkHealth: 'سلامت شبکه', totalTraffic: 'ترافیک کل', currentBestRoute: 'بهترین مسیر فعلی', aiStatus: 'وضعیت هوش مصنوعی', activeSubscriptions: 'اشتراک‌های فعال',
+    networkTraffic: 'ترافیک شبکه', nodeHealth: 'سلامت نودها', routePosture: 'وضعیت مسیر', noActiveRoute: 'مسیر فعالی وجود ندارد', protected: 'محافظت‌شده', normal: 'عادی', national: 'شبکه ملی',
+    name: 'نام', country: 'کشور', status: 'وضعیت', cpu: 'پردازنده', memory: 'حافظه', traffic: 'ترافیک', score: 'امتیاز', latency: 'تأخیر', core: 'هسته', version: 'نسخه', lastSeen: 'آخرین اتصال', actions: 'عملیات',
+    managedNodes: 'نودهای مدیریت‌شده', allStatuses: 'همه وضعیت‌ها', view: 'مشاهده', benchmark: 'بنچمارک', restart: 'راه‌اندازی مجدد', drain: 'تخلیه', rollback: 'بازگردانی', remove: 'حذف', endpoint: 'نشانی', agent: 'ایجنت', capabilities: 'قابلیت‌ها',
+    trafficEngineering: 'مهندسی ترافیک', createRoute: 'ساخت مسیر', protocol: 'پروتکل', transport: 'انتقال', path: 'مسیر نودها', wins: 'بردها', updated: 'به‌روزرسانی', activate: 'فعال‌سازی', active: 'فعال',
+    protocolInventory: 'نمای پروتکل‌ها', routesCount: 'مسیرها', averageScore: 'میانگین امتیاز', bestScore: 'بهترین امتیاز',
+    experimentMemory: 'حافظه آزمایش‌ها', level: 'سطح', decision: 'تصمیم', loss: 'اتلاف', throughput: 'توان عملیاتی', stability: 'پایداری', promote: 'ارتقا', golden: 'طلایی', verified: 'تأییدشده', experimental: 'آزمایشی',
+    decisionGateway: 'دروازه تصمیم', runOptimization: 'اجرای بهینه‌سازی', currentScore: 'امتیاز فعلی', previousScore: 'امتیاز قبلی', anomaly: 'ناهنجاری', newMethod: 'روش جدید', routeFailed: 'خرابی مسیر', optimizationRequested: 'درخواست دستی', candidate: 'نامزد', aiCalls: 'فراخوانی AI', localDecisions: 'تصمیم محلی', decisionHistory: 'تاریخچه تصمیم‌ها', reason: 'دلیل', tokens: 'توکن‌ها',
+    userManagement: 'مدیریت کاربران', createUser: 'ساخت کاربر', username: 'نام کاربری', email: 'ایمیل', role: 'نقش', created: 'ساخته‌شده', enabled: 'فعال', disabled: 'غیرفعال', password: 'گذرواژه',
+    subscriptionManagement: 'مدیریت اشتراک‌ها', createSubscription: 'ساخت اشتراک', user: 'کاربر', plan: 'پلن', usage: 'مصرف', expires: 'انقضا', nodesAssigned: 'نودها', revealOnce: 'این توکن فقط اکنون نمایش داده می‌شود؛ آن را کپی کنید.',
+    plans: 'پلن‌ها', createPlan: 'ساخت پلن', quota: 'حجم', duration: 'مدت', devices: 'دستگاه', price: 'قیمت', days: 'روز',
+    systemSettings: 'تنظیمات سیستم', runtime: 'اجرایی', security: 'امنیت', audit: 'ممیزی', nationalMode: 'حالت شبکه ملی', internationalFailures: 'خطاهای ارتباط خارجی', internationalSuccesses: 'اتصال‌های موفق خارجی', optimizerEnabled: 'فعال بودن بهینه‌ساز', minScoreChange: 'حداقل تغییر امتیاز', save: 'ذخیره', createApiKey: 'ساخت کلید API', keyName: 'نام کلید', auditEvents: 'رویدادهای ممیزی', actor: 'اجراکننده', resource: 'منبع', ipAddress: 'نشانی IP',
+    cancel: 'انصراف', create: 'ساخت', confirm: 'تأیید', close: 'بستن', noRecords: 'داده‌ای وجود ندارد', loading: 'در حال بارگذاری مرکز کنترل', completed: 'انجام شد', failed: 'ناموفق', confirmAction: 'تأیید عملیات', irreversible: 'این عملیات قابل بازگشت نیست.', required: 'این فیلد الزامی است',
+    signIn: 'ورود', authorizedOnly: 'فقط کاربران مجاز', sessionAccess: 'دسترسی به مرکز کنترل', language: 'زبان', live: 'زنده',
+  },
+  ru: {
+    dashboard: 'Обзор', nodes: 'Узлы', routes: 'Маршруты', protocols: 'Протоколы', experiments: 'Эксперименты', optimizer: 'Оптимизатор', users: 'Пользователи', subscriptions: 'Подписки', billing: 'Тарифы', settings: 'Настройки',
+    controlPlane: 'Корпоративный центр управления', masterOnline: 'Мастер онлайн', production: 'Продакшен', overview: 'Обзор', refresh: 'Обновить', search: 'Поиск', signOut: 'Выйти',
+    totalNodes: 'Всего узлов', onlineNodes: 'Узлы онлайн', networkHealth: 'Состояние сети', totalTraffic: 'Общий трафик', currentBestRoute: 'Лучший маршрут', aiStatus: 'Статус ИИ', activeSubscriptions: 'Активные подписки',
+    networkTraffic: 'Сетевой трафик', nodeHealth: 'Состояние узлов', routePosture: 'Состояние маршрута', noActiveRoute: 'Нет активного маршрута', protected: 'Защищено', normal: 'Обычный', national: 'Национальный',
+    name: 'Имя', country: 'Страна', status: 'Статус', cpu: 'CPU', memory: 'Память', traffic: 'Трафик', score: 'Оценка', latency: 'Задержка', core: 'Ядро', version: 'Версия', lastSeen: 'Последняя связь', actions: 'Действия',
+    managedNodes: 'Управляемые узлы', allStatuses: 'Все статусы', view: 'Открыть', benchmark: 'Тест', restart: 'Перезапуск', drain: 'Вывод', rollback: 'Откат', remove: 'Удалить', endpoint: 'Адрес', agent: 'Агент', capabilities: 'Возможности',
+    trafficEngineering: 'Управление трафиком', createRoute: 'Создать маршрут', protocol: 'Протокол', transport: 'Транспорт', path: 'Путь', wins: 'Победы', updated: 'Обновлено', activate: 'Активировать', active: 'Активен',
+    protocolInventory: 'Обзор протоколов', routesCount: 'Маршруты', averageScore: 'Средняя оценка', bestScore: 'Лучшая оценка',
+    experimentMemory: 'Память экспериментов', level: 'Уровень', decision: 'Решение', loss: 'Потери', throughput: 'Пропускная способность', stability: 'Стабильность', promote: 'Повысить', golden: 'Эталон', verified: 'Проверено', experimental: 'Эксперимент',
+    decisionGateway: 'Шлюз решений', runOptimization: 'Запустить оптимизацию', currentScore: 'Текущая оценка', previousScore: 'Прошлая оценка', anomaly: 'Аномалия', newMethod: 'Новый метод', routeFailed: 'Сбой маршрута', optimizationRequested: 'Ручной запрос', candidate: 'Кандидат', aiCalls: 'Вызовы ИИ', localDecisions: 'Локальные решения', decisionHistory: 'История решений', reason: 'Причина', tokens: 'Токены',
+    userManagement: 'Управление пользователями', createUser: 'Создать пользователя', username: 'Логин', email: 'Почта', role: 'Роль', created: 'Создан', enabled: 'Включён', disabled: 'Отключён', password: 'Пароль',
+    subscriptionManagement: 'Управление подписками', createSubscription: 'Создать подписку', user: 'Пользователь', plan: 'Тариф', usage: 'Использовано', expires: 'Истекает', nodesAssigned: 'Узлы', revealOnce: 'Скопируйте токен сейчас — повторно он не отображается.',
+    plans: 'Тарифы', createPlan: 'Создать тариф', quota: 'Квота', duration: 'Срок', devices: 'Устройства', price: 'Цена', days: 'дней',
+    systemSettings: 'Системные настройки', runtime: 'Среда', security: 'Безопасность', audit: 'Аудит', nationalMode: 'Национальный режим', internationalFailures: 'Внешние ошибки', internationalSuccesses: 'Внешние успехи', optimizerEnabled: 'Оптимизатор включён', minScoreChange: 'Минимальное изменение оценки', save: 'Сохранить', createApiKey: 'Создать API-ключ', keyName: 'Имя ключа', auditEvents: 'События аудита', actor: 'Инициатор', resource: 'Ресурс', ipAddress: 'IP-адрес',
+    cancel: 'Отмена', create: 'Создать', confirm: 'Подтвердить', close: 'Закрыть', noRecords: 'Нет данных', loading: 'Загрузка центра управления', completed: 'Выполнено', failed: 'Ошибка', confirmAction: 'Подтвердите действие', irreversible: 'Это действие нельзя отменить.', required: 'Обязательное поле',
+    signIn: 'Войти', authorizedOnly: 'Только для авторизованных операторов', sessionAccess: 'Доступ к центру управления', language: 'Язык', live: 'Онлайн',
+  },
+} as const
+
+export type TranslationKey = keyof typeof dictionaries.en
+export function translate(locale: Locale, key: TranslationKey): string { return dictionaries[locale][key] ?? dictionaries.en[key] }
+export function direction(locale: Locale) { return locale === 'fa' ? 'rtl' : 'ltr' }
