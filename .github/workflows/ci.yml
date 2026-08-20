@@ -50,14 +50,25 @@ jobs:
         run: |
           python -m compileall -q master/app agent/app installer
 
-      - name: Run tests when present
+      - name: Run master tests
+        working-directory: master
         env:
-          PYTHONPATH: master:agent:installer
+          PYTHONPATH: ${{ github.workspace }}/master
         run: |
-          if find . -type f \( -name 'test_*.py' -o -name '*_test.py' \) -not -path './.git/*' | grep -q .; then
-            pytest -q
+          if find tests -type f \( -name 'test_*.py' -o -name '*_test.py' \) | grep -q .; then
+            pytest -q tests
           else
-            echo "No pytest tests found; compile and import validation completed."
+            echo "No master tests found."
+          fi
+
+      - name: Run repository tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/master
+        run: |
+          if find tests -maxdepth 1 -type f \( -name 'test_*.py' -o -name '*_test.py' \) | grep -q .; then
+            pytest -q tests
+          else
+            echo "No repository tests found."
           fi
 
   installer:
