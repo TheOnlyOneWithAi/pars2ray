@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import os
 import socket
 import statistics
@@ -10,7 +11,7 @@ from enum import StrEnum
 import psutil
 import socket as socket_module
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.services.core_manager import apply, capability, core_status, restart_service, rollback
 
@@ -29,7 +30,8 @@ def authorize(token: str | None) -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "node_key": NODE_KEY, "country": COUNTRY, "agent_version": AGENT_VERSION, "hostname": socket.gethostname(), "timestamp": int(time.time())}
+    # Keep the unauthenticated liveness endpoint intentionally non-sensitive.
+    return {"ok": True}
 
 
 @app.get("/heartbeat")
@@ -57,17 +59,54 @@ class BenchmarkRequest(BaseModel):
     attempts: int = Field(default=5, ge=1, le=20)
     timeout_seconds: float = Field(default=3.0, ge=0.2, le=15.0)
 
+    @field_validator("host")
+    @classmethod
+    def valid_host(cls, value: str) -> str:
+        value = value.strip().rstrip(".")
+        if not value or any(ch.isspace() for ch in value):
+            raise ValueError("invalid_host")
+        return value
+
+
+def _public_addresses(host: str) -> list[tuple[int, str]]:
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=422, detail="host_resolution_failed") from exc
+
+    addresses: list[tuple[int, str]] = []
+    seen: set[tuple[int, str]] = set()
+    for family, _, _, _, sockaddr in infos:
+        address = sockaddr[0]
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        # Agent benchmarks must not be usable as an SSRF/internal-network probe.
+        if not parsed.is_global:
+            raise HTTPException(status_code=422, detail="benchmark_target_must_be_public")
+        item = (family, address)
+        if item not in seen:
+            seen.add(item)
+            addresses.append(item)
+    if not addresses:
+        raise HTTPException(status_code=422, detail="no_public_address")
+    return addresses
+
 
 @app.post("/benchmark/tcp")
 def benchmark(request: BenchmarkRequest, x_agent_token: str | None = Header(default=None)) -> dict:
     authorize(x_agent_token)
+    addresses = _public_addresses(request.host)
     latencies: list[float] = []
     failures = 0
-    for _ in range(request.attempts):
+    for attempt in range(request.attempts):
+        family, address = addresses[attempt % len(addresses)]
         start = time.perf_counter()
         try:
-            with socket_module.create_connection((request.host, request.port), timeout=request.timeout_seconds):
-                pass
+            with socket_module.socket(family, socket.SOCK_STREAM) as sock:
+                sock.settimeout(request.timeout_seconds)
+                sock.connect((address, request.port))
             latencies.append((time.perf_counter() - start) * 1000)
         except OSError:
             failures += 1
