@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     national_failure_threshold: int = 3
     national_recovery_threshold: int = 2
     national_max_candidates_per_round: int = 30
+    intelligence_interval_seconds: int = 300
+    canary_auto_apply: bool = False
     panel_http_port: int = 8000
 
     @field_validator("environment")
