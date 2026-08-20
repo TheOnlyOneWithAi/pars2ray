@@ -34,6 +34,11 @@ class IntelligenceCycle:
         proven = {str(item["route_id"]) for item in golden_candidates(limit=20)}
         ordered = sorted(candidates, key=lambda item: (str(item.get("candidate_id")) in proven, float(item.get("score") or 0)), reverse=True)
         fallback = ordered[0]
+
+        # AI is strictly optional: no key or explicit disable means local-only operation.
+        if not settings.ai_enabled or not settings.openai_api_key:
+            return CycleDecision("TEST", fallback.get("candidate_id"), "AI is disabled; local policy selected the best measured candidate for testing.")
+
         ai_decision, _usage = await analyze({**snapshot, "candidates": ordered[: settings.national_max_candidates_per_round]})
         action = str(ai_decision.get("action", "KEEP"))
         candidate_id = ai_decision.get("candidate_id") or fallback.get("candidate_id")
