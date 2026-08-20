@@ -41,7 +41,7 @@ jobs:
           pip install -r master/requirements.txt
           pip install -r agent/requirements.txt
           pip install -r installer/requirements.txt
-          pip install pytest pytest-asyncio
+          pip install pytest pytest-asyncio ruff
 
       - name: Verify dependency consistency
         run: pip check
@@ -50,25 +50,32 @@ jobs:
         run: |
           python -m compileall -q master/app agent/app installer
 
+      - name: Lint Python sources
+        run: |
+          ruff check master/app agent/app installer
+
       - name: Run master tests
         working-directory: master
         env:
           PYTHONPATH: ${{ github.workspace }}/master
-        run: |
-          if find tests -type f \( -name 'test_*.py' -o -name '*_test.py' \) | grep -q .; then
-            pytest -q tests
-          else
-            echo "No master tests found."
-          fi
+          ENVIRONMENT: test
+          JWT_SECRET: ci-jwt-secret-at-least-32-characters
+          MASTER_SECRET: ci-master-secret-at-least-32-characters
+          ADMIN_PASSWORD: ci-admin-password
+        run: pytest -q tests
 
       - name: Run repository tests
         env:
           PYTHONPATH: ${{ github.workspace }}/master
+          ENVIRONMENT: test
+          JWT_SECRET: ci-jwt-secret-at-least-32-characters
+          MASTER_SECRET: ci-master-secret-at-least-32-characters
+          ADMIN_PASSWORD: ci-admin-password
         run: |
-          if find tests -maxdepth 1 -type f \( -name 'test_*.py' -o -name '*_test.py' \) | grep -q .; then
+          if [ -d tests ] && find tests -type f \( -name 'test_*.py' -o -name '*_test.py' \) | grep -q .; then
             pytest -q tests
           else
-            echo "No repository tests found."
+            echo "No repository-level tests found."
           fi
 
   installer:
@@ -77,22 +84,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: installer/requirements.txt
-
       - name: Install installer dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r installer/requirements.txt
-
       - name: Compile installer
         run: python -m compileall -q installer
-
       - name: Validate installer imports
         run: python -c "import installer.bootstrap; import installer.discover_nodes; import installer.generate_env"
 
@@ -105,20 +108,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
-
       - name: Typecheck
         run: npm run typecheck
-
       - name: Build
         run: npm run build
 
@@ -128,49 +127,45 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Prepare CI environment
         run: |
           cp .env.example .env
-          sed -i 's/^JWT_SECRET=.*/JWT_SECRET=ci-jwt-secret/' .env
-          sed -i 's/^MASTER_SECRET=.*/MASTER_SECRET=ci-master-secret/' .env
+          sed -i 's/^JWT_SECRET=.*/JWT_SECRET=ci-jwt-secret-at-least-32-characters/' .env
+          sed -i 's/^MASTER_SECRET=.*/MASTER_SECRET=ci-master-secret-at-least-32-characters/' .env
           sed -i 's/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=ci-admin-password/' .env
           sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci-postgres-password/' .env
-
       - name: Validate Compose configuration
         run: docker compose --env-file .env -f deploy/docker-compose.yml config --quiet
 
   security:
-    name: Dependency security audit
+    name: Dependency and static security audit
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
+      - name: Install security tools
+        run: python -m pip install --upgrade pip pip-audit bandit
       - name: Audit Python dependencies
         run: |
-          python -m pip install --upgrade pip pip-audit
           pip-audit \
             -r master/requirements.txt \
             -r agent/requirements.txt \
             -r installer/requirements.txt
-
+      - name: Bandit security scan
+        run: bandit -r master/app agent/app installer -ll
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci --no-audit --no-fund
-
       - name: Audit frontend production dependencies
         working-directory: frontend
         run: npm audit --omit=dev --audit-level=high
