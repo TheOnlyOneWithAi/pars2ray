@@ -160,17 +160,16 @@ def upload_tree(c, local, remote):
         tf.add(local, arcname=local.name)
     b.seek(0)
     s = c.open_sftp()
-    remote_home = c.exec_command("printf '%s' \"$HOME\"")[1].read().decode().strip()
-    if not remote_home or not remote_home.startswith("/"):
-        s.close()
-        raise RuntimeError("could not determine remote home directory")
-    tmp = f"{remote_home}/.pars2ray-upload-{secrets.token_hex(16)}.tgz"
     try:
+        remote_home = c.exec_command("printf '%s' \"$HOME\"")[1].read().decode().strip()  # nosec B601
+        if not remote_home or not remote_home.startswith("/"):
+            raise RuntimeError("could not determine remote home directory")
+        tmp = f"{remote_home}/.pars2ray-upload-{secrets.token_hex(16)}.tgz"
         with s.file(tmp, "wb") as f:
             f.write(b.read())
     finally:
         s.close()
-    # Always remove the temporary archive, including when extraction fails.
+
     command = (
         f"trap 'rm -f -- {shlex.quote(tmp)}' EXIT; "
         f"mkdir -p {shlex.quote(remote)} && "
@@ -222,9 +221,6 @@ def discover_nodes():
 
 def install_master():
     ip = required("PANEL_IP")
-    # The API is normally reached through the panel's public IP/hostname. Keep
-    # the local defaults but add the configured panel address so TrustedHost
-    # middleware does not make a successfully installed panel unreachable.
     configured_hosts = [host.strip() for host in val("TRUSTED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
     if ip not in configured_hosts:
         configured_hosts.append(ip)
