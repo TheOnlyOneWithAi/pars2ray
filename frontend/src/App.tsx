@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { api, hasAccess, setSession } from './api'
+import { api, hasAccess, isMockMode, setSession } from './api'
 import { direction, translate, type TranslationKey } from './i18n'
 import { AiSettingsPanel } from './AiSettingsPanel'
 import { BillingPage, DashboardPage, ExperimentsPage, NodesPage, OptimizerPage, ProtocolsPage, RoutesPage, SettingsPage, SubscriptionsPage, UsersPage } from './pages'
@@ -7,52 +7,20 @@ import type { Dashboard, Locale, Node, Page, Route, TelemetryPoint, TrafficBreak
 import { Icon, Spinner } from './ui'
 
 const pages: Page[] = ['dashboard','nodes','routes','protocols','experiments','optimizer','users','subscriptions','billing','settings']
-
-function initialPage(): Page {
-  const hash = location.hash.replace('#/', '') as Page
-  return pages.includes(hash) ? hash : 'dashboard'
-}
+function initialPage(): Page { const hash = location.hash.replace('#/', '') as Page; return pages.includes(hash) ? hash : 'dashboard' }
 
 export default function App() {
-  const [page, setPageState] = useState<Page>(initialPage())
-  const [locale, setLocaleState] = useState<Locale>((localStorage.getItem('pars2ray.locale') as Locale) || 'en')
-  const [dashboard, setDashboard] = useState<Dashboard | null>(null)
-  const [nodes, setNodes] = useState<Node[]>([])
-  const [routes, setRoutes] = useState<Route[]>([])
-  const [telemetry, setTelemetry] = useState<TelemetryPoint[]>([])
-  const [trafficBreakdown, setTrafficBreakdown] = useState<TrafficBreakdown[]>([])
-  const [loading, setLoading] = useState(hasAccess())
-  const [sidebar, setSidebar] = useState(false)
-  const [toasts, setToasts] = useState<{ id: number; message: string; kind: 'success'|'error' }[]>([])
-  const t = useCallback((key: TranslationKey) => translate(locale, key), [locale])
-
-  const notify = useCallback((message: string, kind: 'success'|'error' = 'success') => {
-    const id = Date.now() + Math.random()
-    setToasts(items => [...items, { id, message, kind }])
-    window.setTimeout(() => setToasts(items => items.filter(item => item.id !== id)), 4500)
-  }, [])
-
-  const loadAll = useCallback(async () => {
-    const [dashboardResult, nodesResult, routesResult, telemetryResult, breakdownResult] = await Promise.all([api.dashboard(), api.nodes(), api.routes(), api.telemetry().catch(() => []), api.trafficBreakdown().catch(() => [])])
-    setDashboard(dashboardResult); setNodes(nodesResult); setRoutes(routesResult); setTelemetry(telemetryResult); setTrafficBreakdown(breakdownResult)
-  }, [])
-
-  const loadLive = useCallback(async () => {
-    const [dashboardResult, nodesResult, telemetryResult, breakdownResult] = await Promise.all([api.dashboard(), api.nodes(), api.telemetry().catch(() => []), api.trafficBreakdown().catch(() => [])])
-    setDashboard(dashboardResult); setNodes(nodesResult); setTelemetry(telemetryResult); setTrafficBreakdown(breakdownResult)
-  }, [])
-
+  const [page, setPageState] = useState<Page>(initialPage()); const [locale, setLocaleState] = useState<Locale>((localStorage.getItem('pars2ray.locale') as Locale) || 'en'); const [dashboard, setDashboard] = useState<Dashboard | null>(null); const [nodes, setNodes] = useState<Node[]>([]); const [routes, setRoutes] = useState<Route[]>([]); const [telemetry, setTelemetry] = useState<TelemetryPoint[]>([]); const [trafficBreakdown, setTrafficBreakdown] = useState<TrafficBreakdown[]>([]); const [loading, setLoading] = useState(hasAccess()); const [sidebar, setSidebar] = useState(false); const [toasts, setToasts] = useState<{ id: number; message: string; kind: 'success'|'error' }[]>([]); const t = useCallback((key: TranslationKey) => translate(locale, key), [locale])
+  const notify = useCallback((message: string, kind: 'success'|'error' = 'success') => { const id = Date.now() + Math.random(); setToasts(items => [...items, { id, message, kind }]); window.setTimeout(() => setToasts(items => items.filter(item => item.id !== id)), 4500) }, [])
+  const loadAll = useCallback(async () => { const [dashboardResult, nodesResult, routesResult, telemetryResult, breakdownResult] = await Promise.all([api.dashboard(), api.nodes(), api.routes(), api.telemetry().catch(() => []), api.trafficBreakdown().catch(() => [])]); setDashboard(dashboardResult); setNodes(nodesResult); setRoutes(routesResult); setTelemetry(telemetryResult); setTrafficBreakdown(breakdownResult) }, [])
+  const loadLive = useCallback(async () => { const [dashboardResult, nodesResult, telemetryResult, breakdownResult] = await Promise.all([api.dashboard(), api.nodes(), api.telemetry().catch(() => []), api.trafficBreakdown().catch(() => [])]); setDashboard(dashboardResult); setNodes(nodesResult); setTelemetry(telemetryResult); setTrafficBreakdown(breakdownResult) }, [])
   useEffect(() => { document.documentElement.lang = locale; document.documentElement.dir = direction(locale); localStorage.setItem('pars2ray.locale', locale) }, [locale])
   useEffect(() => { if (!hasAccess()) { setLoading(false); return }; void loadAll().catch(error => notify(error instanceof Error ? error.message : t('failed'), 'error')).finally(() => setLoading(false)); const interval = window.setInterval(() => void loadLive().catch(() => undefined), 30000); return () => window.clearInterval(interval) }, [loadAll, loadLive, notify, t])
-
   function setPage(next: Page) { setPageState(next); location.hash = `/${next}`; setSidebar(false) }
   function setLocale(next: Locale) { setLocaleState(next) }
-
   if (!hasAccess()) return <Login locale={locale} setLocale={setLocale} t={t}/>
   if (loading || !dashboard) return <div className="boot"><div className="logo-mark"><span>P</span></div><Spinner/><p>{t('loading')}</p></div>
-
-  const common = { t, locale, notify }
-  let content
+  const common = { t, locale, notify }; let content
   if (page === 'dashboard') content = <DashboardPage {...common} dashboard={dashboard} nodes={nodes} routes={routes} telemetry={telemetry} trafficBreakdown={trafficBreakdown} openPage={setPage}/>
   else if (page === 'nodes') content = <NodesPage {...common} nodes={nodes} reload={loadAll}/>
   else if (page === 'routes') content = <RoutesPage {...common} routes={routes} nodes={nodes} reload={loadAll}/>
@@ -63,12 +31,9 @@ export default function App() {
   else if (page === 'subscriptions') content = <SubscriptionsPage {...common}/>
   else if (page === 'billing') content = <BillingPage {...common}/>
   else content = <AiSettingsPanel {...common}/>
-
-  return <div className="app-shell"><aside className={`sidebar ${sidebar ? 'open' : ''}`}><div className="brand"><div className="logo-mark"><span>P</span></div><div><strong>Pars2Ray</strong><small>ENTERPRISE</small></div><button className="mobile-close" onClick={() => setSidebar(false)}><Icon name="close"/></button></div><nav>{pages.map(item => <button key={item} className={page === item ? 'active' : ''} onClick={() => setPage(item)}><Icon name={item}/><span>{t(item)}</span>{page === item && <i/>}</button>)}</nav><div className="sidebar-footer"><div><span className="live-dot"/><strong>{t('masterOnline')}</strong></div><small>v2.2.0 · {t('production')}</small></div></aside>{sidebar && <button className="sidebar-scrim" aria-label="close" onClick={() => setSidebar(false)}/>}<main className="main"><header className="topbar"><div className="title-group"><button className="menu-button" onClick={() => setSidebar(true)}><Icon name="menu"/></button><div><span className="breadcrumb">PARS2RAY / {t(page).toUpperCase()}</span><h1>{t(page)}</h1></div></div><div className="top-actions"><span className={`mode-indicator ${dashboard.mode.toLowerCase()}`}><i/>{dashboard.mode}</span><button className="icon-btn refresh-button" title={t('refresh')} onClick={() => void loadAll().then(() => notify(t('completed')))}><Icon name="refresh"/></button><LocalePicker locale={locale} setLocale={setLocale}/><details className="account-menu"><summary><span className="avatar">SA</span></summary><div><span>Super Admin</span><small>Control plane</small><button onClick={() => void api.logout().finally(() => location.reload())}>{t('signOut')}</button></div></details></div></header><div className="page-content">{content}</div></main><div className="toast-stack">{toasts.map(toast => <div className={`toast ${toast.kind}`} key={toast.id}><span>{toast.kind === 'success' ? <Icon name="check" size={16}/> : '!'}</span><p>{toast.message.replaceAll('_',' ')}</p><button onClick={() => setToasts(items => items.filter(item => item.id !== toast.id))}><Icon name="close" size={14}/></button></div>)}</div></div>
+  return <div className="app-shell"><aside className={`sidebar ${sidebar ? 'open' : ''}`}><div className="brand"><div className="logo-mark"><span>P</span></div><div><strong>Pars2Ray</strong><small>ENTERPRISE</small></div><button className="mobile-close" onClick={() => setSidebar(false)}><Icon name="close"/></button></div><nav>{pages.map(item => <button key={item} className={page === item ? 'active' : ''} onClick={() => setPage(item)}><Icon name={item}/><span>{t(item)}</span>{page === item && <i/>}</button>)}</nav><div className="sidebar-footer"><div><span className="live-dot"/><strong>{isMockMode() ? 'Demo mode' : t('masterOnline')}</strong></div><small>v2.2.0 · {isMockMode() ? 'Local test data' : t('production')}</small></div></aside>{sidebar && <button className="sidebar-scrim" aria-label="close" onClick={() => setSidebar(false)}/>}<main className="main"><header className="topbar"><div className="title-group"><button className="menu-button" onClick={() => setSidebar(true)}><Icon name="menu"/></button><div><span className="breadcrumb">PARS2RAY / {t(page).toUpperCase()}</span><h1>{t(page)}</h1></div></div><div className="top-actions"><span className={`mode-indicator ${isMockMode() ? 'demo' : dashboard.mode.toLowerCase()}`}><i/>{isMockMode() ? 'DEMO' : dashboard.mode}</span><button className="icon-btn refresh-button" title={t('refresh')} onClick={() => void loadAll().then(() => notify(t('completed')))}><Icon name="refresh"/></button><LocalePicker locale={locale} setLocale={setLocale}/><details className="account-menu"><summary><span className="avatar">SA</span></summary><div><span>Super Admin</span><small>{isMockMode() ? 'Local demo' : 'Control plane'}</small><button onClick={() => void api.logout().finally(() => location.reload())}>{t('signOut')}</button></div></details></div></header><div className="page-content">{content}</div></main><div className="toast-stack">{toasts.map(toast => <div className={`toast ${toast.kind}`} key={toast.id}><span>{toast.kind === 'success' ? <Icon name="check" size={16}/> : '!'}</span><p>{toast.message.replaceAll('_',' ')}</p><button onClick={() => setToasts(items => items.filter(item => item.id !== toast.id))}><Icon name="close" size={14}/></button></div>)}</div></div>
 }
-
 function LocalePicker({ locale, setLocale }: { locale: Locale; setLocale: (locale: Locale) => void }) { return <select className="locale-picker" value={locale} onChange={event => setLocale(event.target.value as Locale)} aria-label="Language"><option value="en">EN</option><option value="fa">فا</option><option value="ru">RU</option></select> }
-
 function Login({ locale, setLocale, t }: { locale: Locale; setLocale: (locale: Locale) => void; t: (key: TranslationKey) => string }) {
   const [submitting, setSubmitting] = useState(false); const [error, setError] = useState(''); const year = useMemo(() => new Date().getFullYear(), [])
   async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSubmitting(true); setError(''); const form = new FormData(event.currentTarget); try { setSession(await api.login(String(form.get('username')), String(form.get('password')))); location.reload() } catch (caught) { setError(caught instanceof Error ? caught.message : t('failed')); setSubmitting(false) } }
