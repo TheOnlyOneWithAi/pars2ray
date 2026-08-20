@@ -25,12 +25,9 @@ def _number(value, default: float = 0.0) -> float:
 
 
 async def probe_node(node) -> HealthObservation:
-    """Collect a normalized health snapshot from a node agent.
-
-    This function only observes state; it never changes a node configuration.
-    """
+    """Collect a normalized health snapshot; never mutates node configuration."""
     try:
-        status = await agent_client.health(node)
+        await agent_client.health(node)
         metrics = await agent_client.metrics(node)
         return HealthObservation(
             node_id=node.id,
