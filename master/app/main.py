@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
+from app.api.ai_settings import router as ai_settings_router
 from app.core.config import settings
 from app.db.base import Base, SessionLocal, engine
 from app.services.auth import ensure_seed
@@ -60,6 +61,7 @@ def root_health() -> dict:
     return {"ok": True, "service": settings.app_name, "version": settings.app_version}
 
 
+app.include_router(ai_settings_router)
 app.include_router(router)
 
 STATIC = Path(__file__).parent / "static"
