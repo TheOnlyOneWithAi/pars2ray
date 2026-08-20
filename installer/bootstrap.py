@@ -165,17 +165,27 @@ def upload_tree(c, local, remote):
         s.close()
         raise RuntimeError("could not determine remote home directory")
     tmp = f"{remote_home}/.pars2ray-upload-{secrets.token_hex(16)}.tgz"
-    with s.file(tmp, "wb") as f:
-        f.write(b.read())
-    s.close()
-    run(c, f"mkdir -p {shlex.quote(remote)} && tar xzf {shlex.quote(tmp)} -C {shlex.quote(remote)} --strip-components=1 && rm -f {shlex.quote(tmp)}")
+    try:
+        with s.file(tmp, "wb") as f:
+            f.write(b.read())
+    finally:
+        s.close()
+    # Always remove the temporary archive, including when extraction fails.
+    command = (
+        f"trap 'rm -f -- {shlex.quote(tmp)}' EXIT; "
+        f"mkdir -p {shlex.quote(remote)} && "
+        f"tar xzf {shlex.quote(tmp)} -C {shlex.quote(remote)} --strip-components=1"
+    )
+    run(c, command)
 
 
 def upload_file(c, local, remote, mode=0o600):
     s = c.open_sftp()
-    s.put(str(local), remote)
-    s.chmod(remote, mode)
-    s.close()
+    try:
+        s.put(str(local), remote)
+        s.chmod(remote, mode)
+    finally:
+        s.close()
 
 
 def _node_port(prefix):
@@ -212,6 +222,13 @@ def discover_nodes():
 
 def install_master():
     ip = required("PANEL_IP")
+    # The API is normally reached through the panel's public IP/hostname. Keep
+    # the local defaults but add the configured panel address so TrustedHost
+    # middleware does not make a successfully installed panel unreachable.
+    configured_hosts = [host.strip() for host in val("TRUSTED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
+    if ip not in configured_hosts:
+        configured_hosts.append(ip)
+        save_env("TRUSTED_HOSTS", ",".join(configured_hosts))
     c = ssh(ip, required("PANEL_USER"), required("PANEL_PASS"), int(val("PANEL_PORT", "22")))
     run(c, "command -v docker >/dev/null 2>&1 || (apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-plugin)")
     run(c, "systemctl enable --now docker")
@@ -239,15 +256,19 @@ def install_node(n, master_ip):
         f"OPENAI_BASE_URL={val('OPENAI_BASE_URL', 'https://api.openai.com/v1')}\n"
     )
     s = c.open_sftp()
-    with s.file("/opt/pars2ray-agent/.env", "w") as f:
-        f.write(env)
-    s.chmod("/opt/pars2ray-agent/.env", 0o600)
-    s.close()
+    try:
+        with s.file("/opt/pars2ray-agent/.env", "w") as f:
+            f.write(env)
+        s.chmod("/opt/pars2ray-agent/.env", 0o600)
+    finally:
+        s.close()
     service = """[Unit]\nDescription=Pars2Ray Node Agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nWorkingDirectory=/opt/pars2ray-agent\nEnvironmentFile=/opt/pars2ray-agent/.env\nExecStart=/opt/pars2ray-agent/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 9100\nRestart=always\nRestartSec=3\nNoNewPrivileges=true\n\n[Install]\nWantedBy=multi-user.target\n"""
     s = c.open_sftp()
-    with s.file("/etc/systemd/system/pars2ray-agent.service", "w") as f:
-        f.write(service)
-    s.close()
+    try:
+        with s.file("/etc/systemd/system/pars2ray-agent.service", "w") as f:
+            f.write(service)
+    finally:
+        s.close()
     run(c, "cd /opt/pars2ray-agent && python3 -m venv .venv && .venv/bin/pip install --no-cache-dir -r requirements.txt && systemctl daemon-reload && systemctl enable --now pars2ray-agent")
     run(c, f"command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' && ufw allow from {shlex.quote(master_ip)} to any port 9100 proto tcp || true")
     c.close()
