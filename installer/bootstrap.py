@@ -172,6 +172,17 @@ def upload_file(c, local, remote, mode=0o600):
     s.close()
 
 
+def _node_port(prefix):
+    raw = val(prefix + "_PORT", "22")
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise SystemExit(f"{prefix}_PORT must be an integer between 1 and 65535") from exc
+    if not 1 <= port <= 65535:
+        raise SystemExit(f"{prefix}_PORT must be an integer between 1 and 65535")
+    return port
+
+
 def discover_nodes():
     pat = re.compile(r"^([A-Z]{2})(\d+)_IP$")
     out = []
@@ -187,7 +198,7 @@ def discover_nodes():
                 "ip": ip.strip(),
                 "user": val(prefix + "_USER", "root"),
                 "password": val(prefix + "_PASS"),
-                "port": int(val(prefix + "_PORT", "22")),
+                "port": _node_port(prefix),
             }
         )
     return sorted(out, key=lambda x: x["node_key"])
@@ -241,12 +252,18 @@ def install_node(n, master_ip):
 def register(master_ip, n, token):
     url = f"http://{master_ip}:{val('PANEL_HTTP_PORT', '8000')}/api/v1/nodes/register"
     body = {"node_key": n["node_key"], "country": n["country"], "endpoint": f"http://{n['ip']}:9100", "agent_token": token}
-    for _ in range(12):
+    for attempt in range(12):
         try:
             r = httpx.post(url, headers={"X-Master-Secret": required("MASTER_SECRET")}, json=body, timeout=8)
             r.raise_for_status()
             return
-        except Exception:
+        except httpx.HTTPStatusError as exc:
+            # Do not waste the full retry window on deterministic auth/validation failures.
+            if exc.response.status_code < 500:
+                raise RuntimeError(f"node registration rejected with HTTP {exc.response.status_code}") from exc
+        except httpx.HTTPError:
+            pass
+        if attempt < 11:
             time.sleep(3)
     raise RuntimeError(f"could not register {n['node_key']} with master")
 
@@ -274,6 +291,7 @@ def main():
 
     master = install_master()
     relay = None
+    failed_nodes = []
     print(f"[DISCOVERY] {len(nodes)} node(s)")
     for n in nodes:
         try:
@@ -282,12 +300,16 @@ def main():
             if is_ai:
                 relay = (n, token)
         except Exception as e:
+            failed_nodes.append(n["node_key"])
             print(f"[{n['node_key']}] FAILED: {type(e).__name__}: {e}")
 
     if relay:
         configure_relay(master, *relay)
+
     print(f"UI: http://{master}:{val('PANEL_HTTP_PORT', '8000')}/")
     print(f"OpenAPI: http://{master}:{val('PANEL_HTTP_PORT', '8000')}/openapi.json")
+    if failed_nodes:
+        raise SystemExit(f"Node installation failed for: {', '.join(failed_nodes)}")
 
 
 if __name__ == "__main__":
