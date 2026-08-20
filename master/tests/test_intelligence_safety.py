@@ -1,5 +1,3 @@
-import pytest
-
 from app.services.canary_runner import CanaryObservation, CanaryRunner
 from app.services.experiment_lab import ExperimentPolicy
 
