@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, io, os, re, secrets, shlex, tarfile, time
+import getpass, hashlib, io, os, re, secrets, shlex, tarfile, time
 from pathlib import Path
 import httpx, paramiko
 from dotenv import dotenv_values, set_key
@@ -9,8 +9,22 @@ ROOT=Path(__file__).resolve().parents[1]; ENV_PATH=ROOT/'.env'; ENV=dict(dotenv_
 def val(name,default=''): return (ENV.get(name) or default).strip()
 def required(name):
     v=val(name)
-    if not v: raise SystemExit(f'Missing required {name} in .env')
+    if not v and os.isatty(0):
+        prompt=f'{name}: '
+        v=(getpass.getpass(prompt) if name.endswith(('_PASS','_PASSWORD')) else input(prompt)).strip()
+        if v:
+            set_key(str(ENV_PATH),name,v); ENV[name]=v
+    if not v: raise SystemExit(f'Missing required {name}; provide it in .env or an interactive terminal')
     return v
+
+def prompt_node_credentials(nodes):
+    if not os.isatty(0): return
+    for n in nodes:
+        if not n['password']:
+            n['password']=getpass.getpass(f"{n['node_key']} SSH password: ").strip()
+            if n['password']: set_key(str(ENV_PATH),f"{n['node_key']}_PASS",n['password']); ENV[f"{n['node_key']}_PASS"]=n['password']
+        if not n['user'] or n['user']=='root':
+            entered=input(f"{n['node_key']} SSH user [root]: ").strip() or 'root'; n['user']=entered; set_key(str(ENV_PATH),f"{n['node_key']}_USER",entered); ENV[f"{n['node_key']}_USER"]=entered
 
 def ssh(ip,user,password,port):
     c=paramiko.SSHClient(); c.set_missing_host_key_policy(paramiko.AutoAddPolicy()); c.connect(ip,port=port,username=user,password=password,timeout=18,banner_timeout=18,auth_timeout=18); return c
@@ -77,7 +91,7 @@ def configure_relay(master_ip,n,token):
 
 def main():
     if not ENV_PATH.exists(): raise SystemExit('Copy .env.example to .env and fill it first.')
-    master=install_master(); nodes=discover_nodes(); relay=None
+    master=install_master(); nodes=discover_nodes(); prompt_node_credentials(nodes); relay=None
     print(f'[DISCOVERY] {len(nodes)} foreign node(s)')
     for n in nodes:
         try:
