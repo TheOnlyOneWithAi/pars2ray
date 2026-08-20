@@ -11,6 +11,10 @@ permissions:
 
 env:
   PYTHONPATH: master
+  ENVIRONMENT: development
+  JWT_SECRET: ci-test-jwt-secret-012345678901234567890123
+  MASTER_SECRET: ci-test-master-secret-012345678901234567890123
+  ADMIN_PASSWORD: ci-test-admin-password
 
 jobs:
   test:
