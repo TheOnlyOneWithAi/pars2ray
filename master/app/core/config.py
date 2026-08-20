@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     @field_validator("environment")
     @classmethod
     def valid_environment(cls, value: str) -> str:
+        value = value.lower().strip()
+        if value == "test":
+            return "development"
         if value not in {"development", "staging", "production"}:
             raise ValueError("environment must be development, staging, or production")
         return value
