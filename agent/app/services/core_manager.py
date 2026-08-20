@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 STATE = Path(os.getenv("AGENT_STATE_DIR", "/var/lib/pars2ray-agent"))
@@ -37,13 +38,24 @@ def _atomic_copy(source: Path, destination: Path) -> None:
     """Copy a file atomically so readers never see a partial JSON document."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
+    temporary_path = Path(temporary)
     try:
         os.close(fd)
-        temporary_path = Path(temporary)
         shutil.copy2(source, temporary_path)
+        with temporary_path.open("rb") as handle:
+            os.fsync(handle.fileno())
         os.replace(temporary_path, destination)
+        # Best effort directory fsync for crash consistency on POSIX filesystems.
+        try:
+            directory_fd = os.open(destination.parent, os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
     finally:
-        Path(temporary).unlink(missing_ok=True)
+        temporary_path.unlink(missing_ok=True)
 
 
 def capability() -> dict:
@@ -82,21 +94,20 @@ def core_status() -> dict:
     state = capability()
     active_core = state["active_core"]
     service_state = "NOT_INSTALLED"
-    if active_core != "none":
-        if shutil.which("systemctl"):
-            try:
-                result = subprocess.run(
-                    ["systemctl", "is-active", active_core],
-                    capture_output=True,
-                    text=True,
-                    timeout=3,
-                    check=False,
-                )
-                service_state = result.stdout.strip() or "UNKNOWN"
-            except (OSError, subprocess.TimeoutExpired):
-                service_state = "UNKNOWN"
-        else:
+    if active_core != "none" and shutil.which("systemctl"):
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-active", active_core],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            service_state = result.stdout.strip() or "UNKNOWN"
+        except (OSError, subprocess.TimeoutExpired):
             service_state = "UNKNOWN"
+    elif active_core != "none":
+        service_state = "UNKNOWN"
     config_metadata = {
         "present": ACTIVE.exists(),
         "bytes": ACTIVE.stat().st_size if ACTIVE.exists() else 0,
@@ -139,7 +150,24 @@ def _restart(core: str) -> tuple[bool, str]:
             timeout=15,
             check=False,
         )
-        return result.returncode == 0, "restarted" if result.returncode == 0 else "restart_failed"
+        if result.returncode != 0:
+            return False, "restart_failed"
+
+        # systemctl restart only means the request was accepted. Verify the
+        # service reaches active state before reporting success to the Master.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            state = subprocess.run(
+                ["systemctl", "is-active", service],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            ).stdout.strip()
+            if state == "active":
+                return True, "restarted"
+            time.sleep(0.25)
+        return False, "restart_healthcheck_failed"
     except (OSError, subprocess.TimeoutExpired):
         return False, "restart_failed"
 
@@ -173,8 +201,6 @@ def apply(payload: dict) -> dict:
             if had_active:
                 _atomic_copy(ACTIVE, PREVIOUS)
             else:
-                # A stale PREVIOUS must never become the rollback target for the
-                # first active config in a new state history.
                 PREVIOUS.unlink(missing_ok=True)
 
             _atomic_copy(candidate, ACTIVE)
