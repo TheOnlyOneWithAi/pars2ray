@@ -1,5 +1,3 @@
-import pytest
-
 from app.services.canary_runner import CanaryObservation, CanaryRunner
 from app.services.experiment_lab import ExperimentPolicy
 
@@ -25,3 +23,8 @@ def test_policy_promotes_only_after_gates():
     policy = ExperimentPolicy()
     assert policy.decision(50, 65, 1, 3, 99) == "PROMOTE"
     assert policy.decision(50, 55, 1, 3, 99) == "KEEP"
+
+
+def test_policy_rejects_stability_breach_even_with_high_score():
+    policy = ExperimentPolicy()
+    assert policy.decision(10, 100, 0.1, 10, 94.9) == "ROLLBACK"
