@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.canary_runner import CanaryObservation, CanaryRunner
 from app.services.experiment_lab import ExperimentPolicy
 
@@ -28,3 +30,10 @@ def test_policy_promotes_only_after_gates():
 def test_policy_rejects_stability_breach_even_with_high_score():
     policy = ExperimentPolicy()
     assert policy.decision(10, 100, 0.1, 10, 94.9) == "ROLLBACK"
+
+
+def test_canary_requires_the_configured_streak():
+    runner = CanaryRunner(ExperimentPolicy(min_improvement=10, required_wins=3))
+    observation = CanaryObservation("c1", 30, 3, 0.1, 200, 99.5)
+    assert runner.evaluate(50, observation, 2).action == "CANARY"
+    assert runner.evaluate(50, observation, 3).action == "PROMOTE"
