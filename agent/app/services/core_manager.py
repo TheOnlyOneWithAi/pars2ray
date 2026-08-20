@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import shutil
@@ -11,11 +13,24 @@ STATE = Path(os.getenv("AGENT_STATE_DIR", "/var/lib/pars2ray-agent"))
 ACTIVE = STATE / "active.json"
 PREVIOUS = STATE / "previous.json"
 GOLDEN = STATE / "golden.json"
+LOCK = STATE / ".core-manager.lock"
 ALLOWED_CORES = ("xray", "sing-box")
 
 
 def _ensure_state() -> None:
     STATE.mkdir(parents=True, exist_ok=True)
+
+
+@contextlib.contextmanager
+def _state_lock():
+    """Serialize config mutations across concurrent API workers/processes."""
+    _ensure_state()
+    with LOCK.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _atomic_copy(source: Path, destination: Path) -> None:
@@ -52,8 +67,9 @@ def capability() -> dict:
                 timeout=3,
                 check=False,
             )
-            version = result.stdout.splitlines()[0][:80] if result.stdout.splitlines() else "unknown"
-        except (OSError, IndexError, subprocess.TimeoutExpired):
+            lines = result.stdout.splitlines()
+            version = lines[0][:80] if lines else "unknown"
+        except (OSError, subprocess.TimeoutExpired):
             version = "unknown"
     return {
         "installed": installed,
@@ -131,87 +147,96 @@ def _restart(core: str) -> tuple[bool, str]:
         return False, "restart_failed"
 
 
+def _restore_service(core: str) -> tuple[bool, str]:
+    """Best-effort restart after restoring a known-good config."""
+    return _restart(core)
+
+
 def apply(payload: dict) -> dict:
     """Validate and apply a config without leaving an untested config behind on failure."""
-    _ensure_state()
     core = payload.get("core", "xray")
     config = payload.get("config")
     if core not in ALLOWED_CORES or not isinstance(config, dict):
         return {"ok": False, "reason": "invalid_config_request"}
 
-    fd, candidate_name = tempfile.mkstemp(prefix="candidate-", suffix=".json", dir=STATE)
-    candidate = Path(candidate_name)
-    had_active = ACTIVE.exists()
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(config, handle, separators=(",", ":"))
-            handle.flush()
-            os.fsync(handle.fileno())
-
-        valid, reason = _validate(core, candidate)
-        if not valid:
-            return {"ok": False, "reason": reason}
-
-        # Only create a rollback point from the actual active config. Never use
-        # an old PREVIOUS file when there was no active config before this apply.
-        if had_active:
-            _atomic_copy(ACTIVE, PREVIOUS)
-
-        _atomic_copy(candidate, ACTIVE)
-        restarted, restart_reason = _restart(core)
-        if not restarted:
-            if had_active and PREVIOUS.exists():
-                _atomic_copy(PREVIOUS, ACTIVE)
-            else:
-                try:
-                    ACTIVE.unlink()
-                except FileNotFoundError:
-                    pass
-            return {"ok": False, "reason": restart_reason, "rolled_back": True}
-
-        return {"ok": True, "core": core, "candidate_id": payload.get("candidate_id", "")}
-    finally:
+    with _state_lock():
+        fd, candidate_name = tempfile.mkstemp(prefix="candidate-", suffix=".json", dir=STATE)
+        candidate = Path(candidate_name)
+        had_active = ACTIVE.exists()
         try:
-            candidate.unlink()
-        except FileNotFoundError:
-            pass
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(config, handle, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+
+            valid, reason = _validate(core, candidate)
+            if not valid:
+                return {"ok": False, "reason": reason}
+
+            if had_active:
+                _atomic_copy(ACTIVE, PREVIOUS)
+
+            _atomic_copy(candidate, ACTIVE)
+            restarted, restart_reason = _restart(core)
+            if not restarted:
+                if had_active and PREVIOUS.exists():
+                    _atomic_copy(PREVIOUS, ACTIVE)
+                    recovered, recovery_reason = _restore_service(core)
+                    return {
+                        "ok": False,
+                        "reason": restart_reason,
+                        "rolled_back": True,
+                        "recovery_ok": recovered,
+                        "recovery_reason": recovery_reason,
+                    }
+                ACTIVE.unlink(missing_ok=True)
+                return {"ok": False, "reason": restart_reason, "rolled_back": True, "recovery_ok": True}
+
+            return {"ok": True, "core": core, "candidate_id": payload.get("candidate_id", "")}
+        finally:
+            candidate.unlink(missing_ok=True)
 
 
 def rollback() -> dict:
     """Swap ACTIVE/PREVIOUS and restart the selected core; restore on failure."""
-    _ensure_state()
-    if not PREVIOUS.exists():
-        return {"ok": False, "reason": "no_previous_config"}
+    with _state_lock():
+        if not PREVIOUS.exists():
+            return {"ok": False, "reason": "no_previous_config"}
 
-    core = capability().get("active_core")
-    if core == "none":
-        return {"ok": False, "reason": "no_supported_core_installed"}
+        core = capability().get("active_core")
+        if core == "none":
+            return {"ok": False, "reason": "no_supported_core_installed"}
 
-    current = None
-    if ACTIVE.exists():
-        fd, current_name = tempfile.mkstemp(prefix="rollback-current-", suffix=".json", dir=STATE)
-        os.close(fd)
-        current = Path(current_name)
-        try:
+        current = None
+        if ACTIVE.exists():
+            fd, current_name = tempfile.mkstemp(prefix="rollback-current-", suffix=".json", dir=STATE)
+            os.close(fd)
+            current = Path(current_name)
             shutil.copy2(ACTIVE, current)
-        except Exception:
-            current.unlink(missing_ok=True)
-            raise
 
-    try:
-        _atomic_copy(PREVIOUS, ACTIVE)
-        restarted, reason = _restart(core)
-        if not restarted:
+        try:
+            _atomic_copy(PREVIOUS, ACTIVE)
+            restarted, reason = _restart(core)
+            if not restarted:
+                if current and current.exists():
+                    _atomic_copy(current, ACTIVE)
+                    recovered, recovery_reason = _restore_service(core)
+                else:
+                    recovered, recovery_reason = False, "no_current_config_to_restore"
+                return {
+                    "ok": False,
+                    "reason": reason,
+                    "rolled_back": True,
+                    "recovery_ok": recovered,
+                    "recovery_reason": recovery_reason,
+                }
+
             if current and current.exists():
-                _atomic_copy(current, ACTIVE)
-            return {"ok": False, "reason": reason, "rolled_back": True}
-
-        if current and current.exists():
-            _atomic_copy(current, PREVIOUS)
-        return {"ok": True, "rolled_back": True, "core": core}
-    finally:
-        if current:
-            current.unlink(missing_ok=True)
+                _atomic_copy(current, PREVIOUS)
+            return {"ok": True, "rolled_back": True, "core": core}
+        finally:
+            if current:
+                current.unlink(missing_ok=True)
 
 
 def restart_service() -> dict:
