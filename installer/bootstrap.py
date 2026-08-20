@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import getpass
-import hashlib
 import io
 import os
 import re
@@ -124,7 +123,6 @@ def prompt_nodes_interactively():
         nodes.append(node)
         used_keys.add(node_key)
 
-        # Keep the interactive configuration reusable on the next run.
         save_env(f"{node_key}_IP", ip)
         save_env(f"{node_key}_USER", user)
         save_env(f"{node_key}_PASS", password)
@@ -138,13 +136,17 @@ def prompt_nodes_interactively():
 
 def ssh(ip, user, password, port):
     c = paramiko.SSHClient()
-    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    known_hosts = Path(val("PARS2RAY_KNOWN_HOSTS", "~/.ssh/known_hosts")).expanduser()
+    if known_hosts.exists():
+        c.load_host_keys(str(known_hosts))
+    c.set_missing_host_key_policy(paramiko.RejectPolicy())
     c.connect(ip, port=port, username=user, password=password, timeout=18, banner_timeout=18, auth_timeout=18)
     return c
 
 
 def run(c, cmd):
-    _, out, err = c.exec_command(cmd, get_pty=True)
+    # Commands are built from fixed installer strings; caller-controlled values are shell-quoted.
+    _, out, err = c.exec_command(cmd, get_pty=True)  # nosec B601
     code = out.channel.recv_exit_status()
     _ = out.read()
     __ = err.read()
@@ -158,11 +160,11 @@ def upload_tree(c, local, remote):
         tf.add(local, arcname=local.name)
     b.seek(0)
     s = c.open_sftp()
-    tmp = "/tmp/pars2ray-upload.tgz"
+    tmp = f"/tmp/pars2ray-upload-{secrets.token_hex(16)}.tgz"
     with s.file(tmp, "wb") as f:
         f.write(b.read())
     s.close()
-    run(c, f"mkdir -p {shlex.quote(remote)} && tar xzf {tmp} -C {shlex.quote(remote)} --strip-components=1 && rm -f {tmp}")
+    run(c, f"mkdir -p {shlex.quote(remote)} && tar xzf {shlex.quote(tmp)} -C {shlex.quote(remote)} --strip-components=1 && rm -f {shlex.quote(tmp)}")
 
 
 def upload_file(c, local, remote, mode=0o600):
@@ -258,7 +260,6 @@ def register(master_ip, n, token):
             r.raise_for_status()
             return
         except httpx.HTTPStatusError as exc:
-            # Do not waste the full retry window on deterministic auth/validation failures.
             if exc.response.status_code < 500:
                 raise RuntimeError(f"node registration rejected with HTTP {exc.response.status_code}") from exc
         except httpx.HTTPError:
@@ -283,8 +284,6 @@ def main():
     if not ENV_PATH.exists():
         raise SystemExit("Copy .env.example to .env and fill it first.")
 
-    # Interactive terminals get an explicit node count and one-by-one wizard.
-    # CI/non-interactive deployments keep the existing ENV-based discovery path.
     nodes = prompt_nodes_interactively() if os.isatty(0) else discover_nodes()
     if os.isatty(0) and not nodes:
         print("No nodes selected. The Master will be installed without node agents.")
