@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api, hasAccess, setSession } from './api'
 import { direction, translate, type TranslationKey } from './i18n'
+import { AiSettingsPanel } from './AiSettingsPanel'
 import { BillingPage, DashboardPage, ExperimentsPage, NodesPage, OptimizerPage, ProtocolsPage, RoutesPage, SettingsPage, SubscriptionsPage, UsersPage } from './pages'
 import type { Dashboard, Locale, Node, Page, Route, TelemetryPoint, TrafficBreakdown } from './types'
 import { Icon, Spinner } from './ui'
@@ -13,7 +14,7 @@ function initialPage(): Page {
 }
 
 export default function App() {
-  const [page, setPageState] = useState<Page>(initialPage)
+  const [page, setPageState] = useState<Page>(initialPage())
   const [locale, setLocaleState] = useState<Locale>((localStorage.getItem('pars2ray.locale') as Locale) || 'en')
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [nodes, setNodes] = useState<Node[]>([])
@@ -41,18 +42,8 @@ export default function App() {
     setDashboard(dashboardResult); setNodes(nodesResult); setTelemetry(telemetryResult); setTrafficBreakdown(breakdownResult)
   }, [])
 
-  useEffect(() => {
-    document.documentElement.lang = locale
-    document.documentElement.dir = direction(locale)
-    localStorage.setItem('pars2ray.locale', locale)
-  }, [locale])
-
-  useEffect(() => {
-    if (!hasAccess()) { setLoading(false); return }
-    void loadAll().catch(error => notify(error instanceof Error ? error.message : t('failed'), 'error')).finally(() => setLoading(false))
-    const interval = window.setInterval(() => void loadLive().catch(() => undefined), 30000)
-    return () => window.clearInterval(interval)
-  }, [loadAll, loadLive, notify, t])
+  useEffect(() => { document.documentElement.lang = locale; document.documentElement.dir = direction(locale); localStorage.setItem('pars2ray.locale', locale) }, [locale])
+  useEffect(() => { if (!hasAccess()) { setLoading(false); return }; void loadAll().catch(error => notify(error instanceof Error ? error.message : t('failed'), 'error')).finally(() => setLoading(false)); const interval = window.setInterval(() => void loadLive().catch(() => undefined), 30000); return () => window.clearInterval(interval) }, [loadAll, loadLive, notify, t])
 
   function setPage(next: Page) { setPageState(next); location.hash = `/${next}`; setSidebar(false) }
   function setLocale(next: Locale) { setLocaleState(next) }
@@ -71,34 +62,15 @@ export default function App() {
   else if (page === 'users') content = <UsersPage {...common}/>
   else if (page === 'subscriptions') content = <SubscriptionsPage {...common}/>
   else if (page === 'billing') content = <BillingPage {...common}/>
-  else content = <SettingsPage {...common}/>
+  else content = <AiSettingsPanel {...common}/>
 
-  return <div className="app-shell">
-    <aside className={`sidebar ${sidebar ? 'open' : ''}`}>
-      <div className="brand"><div className="logo-mark"><span>P</span></div><div><strong>Pars2Ray</strong><small>ENTERPRISE</small></div><button className="mobile-close" onClick={() => setSidebar(false)}><Icon name="close"/></button></div>
-      <nav>{pages.map(item => <button key={item} className={page === item ? 'active' : ''} onClick={() => setPage(item)}><Icon name={item}/><span>{t(item)}</span>{page === item && <i/>}</button>)}</nav>
-      <div className="sidebar-footer"><div><span className="live-dot"/><strong>{t('masterOnline')}</strong></div><small>v2.2.0 · {t('production')}</small></div>
-    </aside>
-    {sidebar && <button className="sidebar-scrim" aria-label="close" onClick={() => setSidebar(false)}/>} 
-    <main className="main">
-      <header className="topbar"><div className="title-group"><button className="menu-button" onClick={() => setSidebar(true)}><Icon name="menu"/></button><div><span className="breadcrumb">PARS2RAY / {t(page).toUpperCase()}</span><h1>{t(page)}</h1></div></div><div className="top-actions"><span className={`mode-indicator ${dashboard.mode.toLowerCase()}`}><i/>{dashboard.mode}</span><button className="icon-btn refresh-button" title={t('refresh')} onClick={() => void loadAll().then(() => notify(t('completed')))}><Icon name="refresh"/></button><LocalePicker locale={locale} setLocale={setLocale}/><details className="account-menu"><summary><span className="avatar">SA</span></summary><div><span>Super Admin</span><small>Control plane</small><button onClick={() => void api.logout().finally(() => location.reload())}>{t('signOut')}</button></div></details></div></header>
-      <div className="page-content">{content}</div>
-    </main>
-    <div className="toast-stack">{toasts.map(toast => <div className={`toast ${toast.kind}`} key={toast.id}><span>{toast.kind === 'success' ? <Icon name="check" size={16}/> : '!'}</span><p>{toast.message.replaceAll('_',' ')}</p><button onClick={() => setToasts(items => items.filter(item => item.id !== toast.id))}><Icon name="close" size={14}/></button></div>)}</div>
-  </div>
+  return <div className="app-shell"><aside className={`sidebar ${sidebar ? 'open' : ''}`}><div className="brand"><div className="logo-mark"><span>P</span></div><div><strong>Pars2Ray</strong><small>ENTERPRISE</small></div><button className="mobile-close" onClick={() => setSidebar(false)}><Icon name="close"/></button></div><nav>{pages.map(item => <button key={item} className={page === item ? 'active' : ''} onClick={() => setPage(item)}><Icon name={item}/><span>{t(item)}</span>{page === item && <i/>}</button>)}</nav><div className="sidebar-footer"><div><span className="live-dot"/><strong>{t('masterOnline')}</strong></div><small>v2.2.0 · {t('production')}</small></div></aside>{sidebar && <button className="sidebar-scrim" aria-label="close" onClick={() => setSidebar(false)}/>}<main className="main"><header className="topbar"><div className="title-group"><button className="menu-button" onClick={() => setSidebar(true)}><Icon name="menu"/></button><div><span className="breadcrumb">PARS2RAY / {t(page).toUpperCase()}</span><h1>{t(page)}</h1></div></div><div className="top-actions"><span className={`mode-indicator ${dashboard.mode.toLowerCase()}`}><i/>{dashboard.mode}</span><button className="icon-btn refresh-button" title={t('refresh')} onClick={() => void loadAll().then(() => notify(t('completed')))}><Icon name="refresh"/></button><LocalePicker locale={locale} setLocale={setLocale}/><details className="account-menu"><summary><span className="avatar">SA</span></summary><div><span>Super Admin</span><small>Control plane</small><button onClick={() => void api.logout().finally(() => location.reload())}>{t('signOut')}</button></div></details></div></header><div className="page-content">{content}</div></main><div className="toast-stack">{toasts.map(toast => <div className={`toast ${toast.kind}`} key={toast.id}><span>{toast.kind === 'success' ? <Icon name="check" size={16}/> : '!'}</span><p>{toast.message.replaceAll('_',' ')}</p><button onClick={() => setToasts(items => items.filter(item => item.id !== toast.id))}><Icon name="close" size={14}/></button></div>)}</div></div>
 }
 
-function LocalePicker({ locale, setLocale }: { locale: Locale; setLocale: (locale: Locale) => void }) {
-  return <select className="locale-picker" value={locale} onChange={event => setLocale(event.target.value as Locale)} aria-label="Language"><option value="en">EN</option><option value="fa">فا</option><option value="ru">RU</option></select>
-}
+function LocalePicker({ locale, setLocale }: { locale: Locale; setLocale: (locale: Locale) => void }) { return <select className="locale-picker" value={locale} onChange={event => setLocale(event.target.value as Locale)} aria-label="Language"><option value="en">EN</option><option value="fa">فا</option><option value="ru">RU</option></select> }
 
 function Login({ locale, setLocale, t }: { locale: Locale; setLocale: (locale: Locale) => void; t: (key: TranslationKey) => string }) {
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState('')
-  const year = useMemo(() => new Date().getFullYear(), [])
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setSubmitting(true); setError(''); const form = new FormData(event.currentTarget)
-    try { setSession(await api.login(String(form.get('username')), String(form.get('password')))); location.reload() } catch (caught) { setError(caught instanceof Error ? caught.message : t('failed')); setSubmitting(false) }
-  }
+  const [submitting, setSubmitting] = useState(false); const [error, setError] = useState(''); const year = useMemo(() => new Date().getFullYear(), [])
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSubmitting(true); setError(''); const form = new FormData(event.currentTarget); try { setSession(await api.login(String(form.get('username')), String(form.get('password')))); location.reload() } catch (caught) { setError(caught instanceof Error ? caught.message : t('failed')); setSubmitting(false) } }
   return <div className="login-page"><div className="login-glow one"/><div className="login-glow two"/><section className="login-card"><header><div className="brand"><div className="logo-mark"><span>P</span></div><div><strong>Pars2Ray</strong><small>ENTERPRISE</small></div></div><LocalePicker locale={locale} setLocale={setLocale}/></header><div className="login-title"><span>{t('authorizedOnly')}</span><h1>{t('signIn')}</h1><p>{t('sessionAccess')}</p></div><form onSubmit={submit}><label><span>{t('username')}</span><input name="username" autoComplete="username" minLength={3} required autoFocus/></label><label><span>{t('password')}</span><input name="password" type="password" autoComplete="current-password" minLength={12} required/></label>{error && <p className="login-error">{error.replaceAll('_',' ')}</p>}<button className="button primary wide" disabled={submitting}>{submitting && <Spinner/>}{t('signIn')}</button></form><footer><span>© {year} Pars2Ray</span><span className="secure-session"><i/>{t('production')}</span></footer></section></div>
 }
