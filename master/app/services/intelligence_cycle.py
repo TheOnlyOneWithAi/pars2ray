@@ -37,7 +37,6 @@ class IntelligenceCycle:
         ai_decision, _usage = await analyze({**snapshot, "candidates": ordered[: settings.national_max_candidates_per_round]})
         action = str(ai_decision.get("action", "KEEP"))
         candidate_id = ai_decision.get("candidate_id") or fallback.get("candidate_id")
-        # AI is advisory. Production promotion is never authorized by the LLM.
         if action == "SWITCH":
             action = "CANARY"
         if action not in {"KEEP", "TEST", "CANARY", "ROLLBACK"}:
