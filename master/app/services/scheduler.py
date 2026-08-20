@@ -11,8 +11,8 @@ from app.db.base import SessionLocal
 from app.models.entities import Metric, Node, Traffic
 from app.services import agent_client
 from app.services.benchmark import score_measurement
-from app.services.health_probe import probe_node
 from app.services.intelligence_cycle import run_intelligence_cycle
+from app.services.canary_executor import CanaryExecutionError, execute_canary
 from app.services.national_mode import national_engine
 
 logger = logging.getLogger(__name__)
@@ -52,10 +52,15 @@ async def poll_nodes() -> None:
 
 
 async def intelligence_tick() -> None:
-    """Run one bounded decision cycle after telemetry polling has had a chance to update state."""
+    """Run decision and, when explicitly enabled, execute a guarded canary."""
     try:
         decision = await run_intelligence_cycle()
         logger.info("intelligence decision action=%s candidate=%s", decision.action, decision.candidate_id)
+        if decision.candidate_id and decision.action in {"TEST", "CANARY"}:
+            result = await execute_canary(str(decision.candidate_id))
+            logger.info("canary result action=%s candidate=%s", result.get("action"), decision.candidate_id)
+    except CanaryExecutionError:
+        logger.exception("canary execution failed; production route was not promoted")
     except Exception:
         logger.exception("intelligence cycle failed; scheduler will continue")
 
