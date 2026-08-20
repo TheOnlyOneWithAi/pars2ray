@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     ai_required_wins: int = 3
     ai_max_output_tokens: int = 180
     ai_prompt_cache_key: str = "pars2ray-optimizer-v3"
+    ai_budget_daily_usd: float = 0.50
+    ai_budget_monthly_usd: float = 10.00
+    ai_input_cost_per_million_usd: float = 0.25
+    ai_cached_input_cost_per_million_usd: float = 0.025
+    ai_output_cost_per_million_usd: float = 2.00
+    ai_budget_safety_margin: float = 0.90
     national_mode_enabled: bool = True
     national_failure_threshold: int = 3
     national_recovery_threshold: int = 2
