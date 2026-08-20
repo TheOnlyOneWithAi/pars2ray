@@ -52,6 +52,9 @@ def _runtime_config() -> tuple[bool, str, str]:
 
 async def analyze(context: dict) -> tuple[dict, dict]:
     enabled, model, api_key = _runtime_config()
+    settings.ai_enabled = enabled
+    settings.openai_model = model
+    settings.openai_api_key = api_key
     if not enabled:
         return {"action": "KEEP", "candidate_id": None, "confidence": 1.0, "reason": "AI disabled or not configured; local policy retained the safe configuration."}, {}
     payload = {"model": model, "store": False, "reasoning": {"effort": "low"}, "max_output_tokens": settings.ai_max_output_tokens, "prompt_cache_key": settings.ai_prompt_cache_key, "instructions": SYSTEM_INSTRUCTIONS, "input": [{"role": "user", "content": json.dumps(safe_context(context), separators=(",", ":"), ensure_ascii=False)}], "text": {"format": {"type": "json_schema", "name": "optimizer_decision", "strict": True, "schema": SCHEMA}}}
