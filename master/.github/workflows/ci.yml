@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONPATH: master
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -26,8 +29,8 @@ jobs:
           pip install -r master/requirements.txt
           pip install pytest ruff
       - name: Lint
-        run: ruff check master/app
+        run: ruff check master/app master/tests
       - name: Compile
-        run: python -m compileall -q master/app
+        run: python -m compileall -q master/app master/tests
       - name: Tests
         run: pytest -q master/tests
