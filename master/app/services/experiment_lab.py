@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from app.db.base import SessionLocal
@@ -15,8 +16,13 @@ class ExperimentPolicy:
 
     def decision(self, current_score: float, candidate_score: float, loss_percent: float, wins: int, stability_percent: float = 100.0) -> str:
         """Deterministic safety policy. AI cannot bypass these gates."""
-        delta = candidate_score - current_score
-        if loss_percent > self.max_loss_percent or stability_percent < self.min_stability_percent:
+        values = (current_score, candidate_score, loss_percent, stability_percent)
+        if not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in values):
+            return "ROLLBACK"
+        if not isinstance(wins, int) or wins < 0:
+            return "ROLLBACK"
+        delta = float(candidate_score) - float(current_score)
+        if float(loss_percent) > self.max_loss_percent or float(stability_percent) < self.min_stability_percent:
             return "ROLLBACK"
         if delta < self.min_improvement:
             return "KEEP"
