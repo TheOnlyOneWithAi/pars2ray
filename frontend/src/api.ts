@@ -3,9 +3,13 @@ import type { AuditLog, Candidate, Dashboard, Decision, Experiment, NationalMode
 const base = import.meta.env.VITE_API_URL ?? ''
 const ACCESS_KEY = 'pars2ray.access'
 const REFRESH_KEY = 'pars2ray.refresh'
+const MOCK_KEY = 'pars2ray.mock'
 let access = localStorage.getItem(ACCESS_KEY) ?? ''
 let refresh = localStorage.getItem(REFRESH_KEY) ?? ''
 let refreshRequest: Promise<boolean> | null = null
+
+export const isMockMode = () => localStorage.getItem(MOCK_KEY) === '1'
+export const setMockMode = (enabled: boolean) => enabled ? localStorage.setItem(MOCK_KEY, '1') : localStorage.removeItem(MOCK_KEY)
 
 export function setSession(tokens: TokenPair) {
   access = tokens.access_token
@@ -21,66 +25,71 @@ export function clearSession() {
   localStorage.removeItem(REFRESH_KEY)
 }
 
-export function hasAccess() { return Boolean(access) }
+export function hasAccess() { return isMockMode() || Boolean(access) }
+
+const mockNow = () => new Date().toISOString()
+const mockNodes: Node[] = [
+  { id: 1, node_key: 'demo-node-01', country: 'Germany', endpoint: '203.0.113.10:443', status: 'online', score: 96.4, cpu_percent: 24, memory_percent: 41, traffic_rx_bytes: 1840000000, traffic_tx_bytes: 920000000, latency_ms: 38, core: 'xray', core_version: '25.8.3', agent_version: '2.2.0', capabilities: { reality: true, grpc: true }, last_seen_at: mockNow(), created_at: mockNow() },
+  { id: 2, node_key: 'demo-node-02', country: 'Netherlands', endpoint: '203.0.113.11:443', status: 'online', score: 93.1, cpu_percent: 31, memory_percent: 48, traffic_rx_bytes: 1210000000, traffic_tx_bytes: 640000000, latency_ms: 52, core: 'sing-box', core_version: '1.12.0', agent_version: '2.2.0', capabilities: { reality: true, grpc: false }, last_seen_at: mockNow(), created_at: mockNow() },
+  { id: 3, node_key: 'demo-node-03', country: 'Finland', endpoint: '203.0.113.12:443', status: 'degraded', score: 81.7, cpu_percent: 67, memory_percent: 63, traffic_rx_bytes: 760000000, traffic_tx_bytes: 410000000, latency_ms: 91, core: 'xray', core_version: '25.8.3', agent_version: '2.2.0', capabilities: { reality: true, grpc: true }, last_seen_at: mockNow(), created_at: mockNow() },
+]
+const mockDashboard: Dashboard = { node_count: 3, online_nodes: 2, network_health: 90.4, traffic: { rx_bytes: 3810000000, tx_bytes: 1970000000 }, current_best_route: 'demo-route', ai_status: 'ready', mode: 'DEMO', user_count: 12, subscription_count: 8 }
+const mockRoutes: Route[] = [{ id: 1, name: 'demo-route', node_keys: mockNodes.map(n => n.node_key), core: 'xray', protocol: 'vless', transport: 'grpc', status: 'active', score: 95.2, is_active: true, is_golden: true, consecutive_wins: 14, updated_at: mockNow() }]
+const mockTelemetry: TelemetryPoint[] = Array.from({ length: 24 }, (_, i) => ({ timestamp: new Date(Date.now() - (23 - i) * 3600000).toISOString(), rx_bytes: 100000000 + i * 7000000, tx_bytes: 50000000 + i * 4000000, samples: 10 + i }))
+const mockBreakdown: TrafficBreakdown[] = mockNodes.map(n => ({ node_key: n.node_key, country: n.country, rx_bytes: n.traffic_rx_bytes, tx_bytes: n.traffic_tx_bytes, samples: 24 }))
+
+export const mockTokenPair: TokenPair = { access_token: 'mock-access-token', refresh_token: 'mock-refresh-token', token_type: 'bearer', expires_in: 86400 }
 
 async function renew(): Promise<boolean> {
+  if (isMockMode()) return true
   if (!refresh) return false
   if (!refreshRequest) {
-    refreshRequest = fetch(`${base}/api/v1/auth/refresh`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: refresh }),
-    }).then(async response => {
-      if (!response.ok) return false
-      setSession(await response.json() as TokenPair)
-      return true
-    }).catch(() => false).finally(() => { refreshRequest = null })
+    refreshRequest = fetch(`${base}/api/v1/auth/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: refresh }) }).then(async response => { if (!response.ok) return false; setSession(await response.json() as TokenPair); return true }).catch(() => false).finally(() => { refreshRequest = null })
   }
   return refreshRequest
 }
 
 async function request<T>(path: string, options: RequestInit = {}, retried = false): Promise<T> {
-  const response = await fetch(`${base}${path}`, {
-    ...options,
-    headers: { 'Content-Type': 'application/json', ...(access ? { Authorization: `Bearer ${access}` } : {}), ...(options.headers ?? {}) },
-  })
+  if (isMockMode()) return mockRequest<T>(path, options)
+  const response = await fetch(`${base}${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(access ? { Authorization: `Bearer ${access}` } : {}), ...(options.headers ?? {}) } })
   if (response.status === 401 && !retried && await renew()) return request<T>(path, options, true)
   if (response.status === 401) clearSession()
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({ detail: response.statusText })) as { detail?: string }
-    throw new Error(body.detail ?? `request_failed_${response.status}`)
-  }
+  if (!response.ok) { const body = await response.json().catch(() => ({ detail: response.statusText })) as { detail?: string }; throw new Error(body.detail ?? `request_failed_${response.status}`) }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }
 
+async function mockRequest<T>(path: string, options: RequestInit): Promise<T> {
+  await new Promise(resolve => window.setTimeout(resolve, 120))
+  if (path === '/api/v1/auth/login') return mockTokenPair as T
+  if (path === '/api/v1/auth/logout') { setMockMode(false); clearSession(); return { ok: true } as T }
+  if (path === '/api/v1/dashboard') return mockDashboard as T
+  if (path.startsWith('/api/v1/dashboard/telemetry')) return mockTelemetry as T
+  if (path.startsWith('/api/v1/dashboard/traffic-breakdown')) return mockBreakdown as T
+  if (path === '/api/v1/nodes') return mockNodes as T
+  if (path.startsWith('/api/v1/nodes/') && path.endsWith('/metrics')) return mockNodes.slice(0, 1).map((n, i) => ({ id: i + 1, latency_ms: n.latency_ms, jitter_ms: 3.2, packet_loss_percent: 0.4, throughput_mbps: 840, cpu_percent: n.cpu_percent, memory_percent: n.memory_percent, stability_percent: n.score, measured_at: mockNow() })) as T
+  if (path === '/api/v1/routes') return mockRoutes as T
+  if (path.startsWith('/api/v1/national-mode')) return { mode: 'DEMO', failures: 2, successes: 98 } as T
+  if (path === '/api/v1/experiments') return [] as T
+  if (path === '/api/v1/optimizer/decisions') return [] as T
+  if (path === '/api/v1/optimizer/candidates') return { candidates: [], mode: 'DEMO' } as T
+  if (path === '/api/v1/users') return [] as T
+  if (path === '/api/v1/plans') return [] as T
+  if (path === '/api/v1/subscriptions') return [] as T
+  if (path === '/api/v1/audit-logs') return [] as T
+  if (path === '/api/v1/system/settings') return [] as T
+  if (path.startsWith('/api/v1/nodes/') && ['start','stop','restart','benchmark'].some(action => path.endsWith(`/${action}`))) return { ok: true, mode: 'DEMO' } as T
+  if (options.method === 'DELETE') return { ok: true } as T
+  if (options.method === 'POST' || options.method === 'PATCH' || options.method === 'PUT') return { ok: true } as T
+  return {} as T
+}
+
 export const api = {
-  login: (username: string, password: string) => request<TokenPair>('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  login: async (username: string, password: string) => {
+    if (username === 'admin' && password === 'admin123456') { setMockMode(true); setSession(mockTokenPair); return mockTokenPair }
+    if (isMockMode()) return mockTokenPair
+    return request<TokenPair>('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
+  },
   logout: () => request<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST', body: JSON.stringify({ refresh_token: refresh }) }).finally(clearSession),
-  dashboard: () => request<Dashboard>('/api/v1/dashboard'),
-  telemetry: (hours = 24) => request<TelemetryPoint[]>(`/api/v1/dashboard/telemetry?hours=${hours}`),
-  trafficBreakdown: (hours = 24) => request<TrafficBreakdown[]>(`/api/v1/dashboard/traffic-breakdown?hours=${hours}`),
-  nodes: () => request<Node[]>('/api/v1/nodes'),
-  nodeMetrics: (nodeKey: string, limit = 60) => request<NodeMetric[]>(`/api/v1/nodes/${nodeKey}/metrics?limit=${limit}`),
-  coreStatus: (nodeKey: string) => request<Record<string, unknown>>(`/api/v1/nodes/${nodeKey}/core-status`),
-  routes: () => request<Route[]>('/api/v1/routes'),
-  createRoute: (payload: { name: string; node_keys: string[]; core: string; protocol: string; transport: string; config: Record<string, unknown> }) => request<Route>('/api/v1/routes', { method: 'POST', body: JSON.stringify(payload) }),
-  activateRoute: (id: number) => request<{ ok: boolean }>(`/api/v1/routes/${id}/activate`, { method: 'POST' }),
-  experiments: () => request<Experiment[]>('/api/v1/experiments'),
-  promoteExperiment: (id: number, level: string) => request<{ ok: boolean }>(`/api/v1/experiments/${id}/promote?level=${encodeURIComponent(level)}`, { method: 'POST' }),
-  decisions: () => request<Decision[]>('/api/v1/optimizer/decisions'),
-  candidates: () => request<{ candidates: Candidate[]; mode: string }>('/api/v1/optimizer/candidates'),
-  decide: (payload: Record<string, unknown>) => request<{ action: string; reason: string; ai_called: boolean }>('/api/v1/optimizer/decide', { method: 'POST', body: JSON.stringify(payload) }),
-  users: () => request<User[]>('/api/v1/users'),
-  createUser: (payload: Record<string, unknown>) => request<User>('/api/v1/users', { method: 'POST', body: JSON.stringify(payload) }),
-  updateUser: (id: number, payload: Record<string, unknown>) => request<User>(`/api/v1/users/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
-  plans: () => request<Plan[]>('/api/v1/plans'),
-  createPlan: (payload: Record<string, unknown>) => request<Plan>('/api/v1/plans', { method: 'POST', body: JSON.stringify(payload) }),
-  subscriptions: () => request<Subscription[]>('/api/v1/subscriptions'),
-  createSubscription: (payload: Record<string, unknown>) => request<{ id: number; token: string; expires_at: string }>('/api/v1/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
-  command: (nodeKey: string, action: string) => request<Record<string, unknown>>(`/api/v1/nodes/${nodeKey}/${action}`, { method: 'POST', body: JSON.stringify(action === 'benchmark' ? { host: '1.1.1.1', port: 443, attempts: 5 } : {}) }),
-  removeNode: (nodeKey: string) => request<{ ok: boolean }>(`/api/v1/nodes/${nodeKey}`, { method: 'DELETE' }),
-  auditLogs: () => request<AuditLog[]>('/api/v1/audit-logs'),
-  settings: () => request<SystemSetting[]>('/api/v1/system/settings'),
-  updateSetting: (key: string, value: string) => request<{ ok: boolean }>(`/api/v1/system/settings/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
-  nationalMode: () => request<NationalMode>('/api/v1/national-mode'),
-  createApiKey: (name: string, scopes: string[]) => request<{ key: string; warning: string }>(`/api/v1/api-keys`, { method: 'POST', body: JSON.stringify({ name, scopes }) }),
+  dashboard: () => request<Dashboard>('/api/v1/dashboard'), telemetry: (hours = 24) => request<TelemetryPoint[]>(`/api/v1/dashboard/telemetry?hours=${hours}`), trafficBreakdown: (hours = 24) => request<TrafficBreakdown[]>(`/api/v1/dashboard/traffic-breakdown?hours=${hours}`), nodes: () => request<Node[]>('/api/v1/nodes'), nodeMetrics: (nodeKey: string, limit = 60) => request<NodeMetric[]>(`/api/v1/nodes/${nodeKey}/metrics?limit=${limit}`), coreStatus: (nodeKey: string) => request<Record<string, unknown>>(`/api/v1/nodes/${nodeKey}/core-status`), routes: () => request<Route[]>('/api/v1/routes'), createRoute: (payload: { name: string; node_keys: string[]; core: string; protocol: string; transport: string; config: Record<string, unknown> }) => request<Route>('/api/v1/routes', { method: 'POST', body: JSON.stringify(payload) }), activateRoute: (id: number) => request<{ ok: boolean }>(`/api/v1/routes/${id}/activate`, { method: 'POST' }), experiments: () => request<Experiment[]>('/api/v1/experiments'), promoteExperiment: (id: number, level: string) => request<{ ok: boolean }>(`/api/v1/experiments/${id}/promote?level=${encodeURIComponent(level)}`, { method: 'POST' }), decisions: () => request<Decision[]>('/api/v1/optimizer/decisions'), candidates: () => request<{ candidates: Candidate[]; mode: string }>('/api/v1/optimizer/candidates'), decide: (payload: Record<string, unknown>) => request<{ action: string; reason: string; ai_called: boolean }>('/api/v1/optimizer/decide', { method: 'POST', body: JSON.stringify(payload) }), users: () => request<User[]>('/api/v1/users'), createUser: (payload: Record<string, unknown>) => request<User>('/api/v1/users', { method: 'POST', body: JSON.stringify(payload) }), updateUser: (id: number, payload: Record<string, unknown>) => request<User>(`/api/v1/users/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }), plans: () => request<Plan[]>('/api/v1/plans'), createPlan: (payload: Record<string, unknown>) => request<Plan>('/api/v1/plans', { method: 'POST', body: JSON.stringify(payload) }), subscriptions: () => request<Subscription[]>('/api/v1/subscriptions'), createSubscription: (payload: Record<string, unknown>) => request<{ id: number; token: string; expires_at: string }>('/api/v1/subscriptions', { method: 'POST', body: JSON.stringify(payload) }), command: (nodeKey: string, action: string) => request<Record<string, unknown>>(`/api/v1/nodes/${nodeKey}/${action}`, { method: 'POST' }), removeNode: (nodeKey: string) => request<{ ok: boolean }>(`/api/v1/nodes/${nodeKey}`, { method: 'DELETE' }), auditLogs: () => request<AuditLog[]>('/api/v1/audit-logs'), settings: () => request<SystemSetting[]>('/api/v1/system/settings'), updateSetting: (key: string, value: string) => request<{ ok: boolean }>(`/api/v1/system/settings/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ value }) }), nationalMode: () => request<NationalMode>('/api/v1/national-mode'), createApiKey: (name: string, scopes: string[]) => request<{ key: string; warning: string }>(`/api/v1/api-keys`, { method: 'POST', body: JSON.stringify({ name, scopes }) }),
 }
