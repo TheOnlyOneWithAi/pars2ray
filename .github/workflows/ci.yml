@@ -64,6 +64,13 @@ jobs:
           ADMIN_PASSWORD: ci-admin-password
         run: pytest -q tests
 
+      - name: Run agent tests
+        working-directory: agent
+        env:
+          PYTHONPATH: ${{ github.workspace }}/agent
+          ENVIRONMENT: test
+        run: pytest -q tests
+
       - name: Run repository tests
         env:
           PYTHONPATH: ${{ github.workspace }}/master
