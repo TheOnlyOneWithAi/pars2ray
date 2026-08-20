@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -7,11 +8,14 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.base import SessionLocal
-from app.models.entities import Metric, Node, SystemState, Traffic
+from app.models.entities import Metric, Node, Traffic
 from app.services import agent_client
 from app.services.benchmark import score_measurement
+from app.services.health_probe import probe_node
+from app.services.intelligence_cycle import run_intelligence_cycle
 from app.services.national_mode import national_engine
 
+logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler(timezone="UTC")
 
 
@@ -47,10 +51,20 @@ async def poll_nodes() -> None:
         db.close()
 
 
+async def intelligence_tick() -> None:
+    """Run one bounded decision cycle after telemetry polling has had a chance to update state."""
+    try:
+        decision = await run_intelligence_cycle()
+        logger.info("intelligence decision action=%s candidate=%s", decision.action, decision.candidate_id)
+    except Exception:
+        logger.exception("intelligence cycle failed; scheduler will continue")
+
+
 def start_scheduler() -> None:
     if scheduler.running:
         return
     scheduler.add_job(poll_nodes, "interval", seconds=max(settings.node_poll_seconds, 15), id="node-poll", replace_existing=True, coalesce=True, max_instances=1)
+    scheduler.add_job(intelligence_tick, "interval", seconds=max(getattr(settings, "intelligence_interval_seconds", 300), 30), id="intelligence-cycle", replace_existing=True, coalesce=True, max_instances=1)
     scheduler.start()
 
 
