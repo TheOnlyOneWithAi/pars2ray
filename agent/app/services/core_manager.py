@@ -43,10 +43,7 @@ def _atomic_copy(source: Path, destination: Path) -> None:
         shutil.copy2(source, temporary_path)
         os.replace(temporary_path, destination)
     finally:
-        try:
-            Path(temporary).unlink()
-        except FileNotFoundError:
-            pass
+        Path(temporary).unlink(missing_ok=True)
 
 
 def capability() -> dict:
@@ -175,6 +172,10 @@ def apply(payload: dict) -> dict:
 
             if had_active:
                 _atomic_copy(ACTIVE, PREVIOUS)
+            else:
+                # A stale PREVIOUS must never become the rollback target for the
+                # first active config in a new state history.
+                PREVIOUS.unlink(missing_ok=True)
 
             _atomic_copy(candidate, ACTIVE)
             restarted, restart_reason = _restart(core)
