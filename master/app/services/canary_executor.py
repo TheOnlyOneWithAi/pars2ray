@@ -20,11 +20,18 @@ class CanaryExecutionError(RuntimeError):
     pass
 
 
+def _find_candidate(db, candidate_id: str) -> Route | None:
+    try:
+        return db.get(Route, int(candidate_id))
+    except (TypeError, ValueError):
+        return db.scalar(select(Route).where(Route.name == candidate_id))
+
+
 async def execute_canary(candidate_id: str) -> dict:
     """Run one guarded canary and promote only after deterministic gates pass.
 
     Auto mutation is opt-in through PARS2RAY_CANARY_AUTO_APPLY. With the default
-    value false this service evaluates telemetry but never changes a node.
+    value false this service evaluates no node state and never changes production.
     """
     if not getattr(settings, "canary_auto_apply", False):
         return {"action": "DRY_RUN", "candidate_id": candidate_id, "reason": "Canary auto-apply is disabled."}
@@ -32,7 +39,7 @@ async def execute_canary(candidate_id: str) -> dict:
     db = SessionLocal()
     applied_nodes: list[Node] = []
     try:
-        candidate = db.scalar(select(Route).where(Route.id == int(candidate_id)))
+        candidate = _find_candidate(db, candidate_id)
         if not candidate:
             raise CanaryExecutionError("candidate route not found")
         if not candidate.node_keys:
@@ -46,7 +53,6 @@ async def execute_canary(candidate_id: str) -> dict:
         if not nodes:
             raise CanaryExecutionError("no online candidate nodes")
 
-        # Canary exactly one node first. Never send encrypted config or secrets to logs/AI.
         node = nodes[0]
         config = decrypt_secret(candidate.config_enc)
         await agent_client.apply_config(node, {"config": config, "mode": "CANARY"})
@@ -70,12 +76,14 @@ async def execute_canary(candidate_id: str) -> dict:
         if result.action != "PROMOTE":
             await agent_client.rollback(node)
             applied_nodes.clear()
-            candidate.consecutive_wins = 0
-            db.add(AuditLog(action=f"CANARY_{result.action}", resource_type="route", resource_id=str(candidate.id), metadata_json={"score": result.score, "reason": result.reason}))
+            # Preserve successful canary streaks; unsafe/failed observations reset it.
+            candidate.consecutive_wins = candidate.consecutive_wins + 1 if result.action == "CANARY" else 0
+            if result.action == "CANARY":
+                candidate.score = result.score
+            db.add(AuditLog(action=f"CANARY_{result.action}", resource_type="route", resource_id=str(candidate.id), metadata_json={"score": result.score, "reason": result.reason, "consecutive_wins": candidate.consecutive_wins}))
             db.commit()
-            return {"action": result.action, "candidate_id": candidate_id, "score": result.score, "reason": result.reason}
+            return {"action": result.action, "candidate_id": candidate_id, "score": result.score, "reason": result.reason, "consecutive_wins": candidate.consecutive_wins}
 
-        # Promotion gate passed on the canary node; apply to remaining nodes.
         for remaining in nodes[1:]:
             await agent_client.apply_config(remaining, {"config": config, "mode": "PROMOTE"})
             applied_nodes.append(remaining)
@@ -87,7 +95,7 @@ async def execute_canary(candidate_id: str) -> dict:
         candidate.is_golden = True
         candidate.consecutive_wins += 1
         candidate.score = result.score
-        db.add(AuditLog(action="CANARY_PROMOTE", resource_type="route", resource_id=str(candidate.id), metadata_json={"score": result.score, "nodes": len(applied_nodes)}))
+        db.add(AuditLog(action="CANARY_PROMOTE", resource_type="route", resource_id=str(candidate.id), metadata_json={"score": result.score, "nodes": len(applied_nodes), "consecutive_wins": candidate.consecutive_wins}))
         db.commit()
         return {"action": "PROMOTE", "candidate_id": candidate_id, "score": result.score, "reason": result.reason}
     except Exception as exc:
