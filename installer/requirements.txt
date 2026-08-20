@@ -1,5 +1,5 @@
 pycountry==24.6.1
 python-dotenv==1.2.3
-paramiko==4.0.0
+paramiko==5.0.0
 
 httpx==0.28.1
