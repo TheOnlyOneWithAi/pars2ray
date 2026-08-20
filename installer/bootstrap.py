@@ -160,7 +160,11 @@ def upload_tree(c, local, remote):
         tf.add(local, arcname=local.name)
     b.seek(0)
     s = c.open_sftp()
-    tmp = f"/tmp/pars2ray-upload-{secrets.token_hex(16)}.tgz"
+    remote_home = c.exec_command("printf '%s' \"$HOME\"")[1].read().decode().strip()
+    if not remote_home or not remote_home.startswith("/"):
+        s.close()
+        raise RuntimeError("could not determine remote home directory")
+    tmp = f"{remote_home}/.pars2ray-upload-{secrets.token_hex(16)}.tgz"
     with s.file(tmp, "wb") as f:
         f.write(b.read())
     s.close()
