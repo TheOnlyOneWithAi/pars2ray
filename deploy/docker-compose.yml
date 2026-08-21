@@ -13,8 +13,9 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pars2ray -d pars2ray"]
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 30
+      start_period: 10s
     networks: [pars2ray]
 
   redis:
@@ -26,8 +27,9 @@ services:
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 30
+      start_period: 5s
     networks: [pars2ray]
 
   master:
@@ -38,7 +40,7 @@ services:
     restart: unless-stopped
     env_file: ../.env
     environment:
-      DATABASE_URL: postgresql+psycopg://pars2ray:${POSTGRES_PASSWORD}@db:5432/pars2ray
+      DATABASE_URL: postgresql+psycopg://pars2ray:${POSTGRES_PASSWORD}@db:5432/pars2ray?connect_timeout=5
       REDIS_URL: redis://redis:6379/0
     ports:
       - "${PANEL_HTTP_PORT:-8000}:8000"
@@ -46,11 +48,11 @@ services:
       db: {condition: service_healthy}
       redis: {condition: service_healthy}
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
-      interval: 15s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 20s
+      retries: 12
+      start_period: 45s
     stop_grace_period: 20s
     security_opt:
       - no-new-privileges:true
@@ -69,11 +71,12 @@ services:
     command: ["./scripts/start-worker.sh"]
     env_file: ../.env
     environment:
-      DATABASE_URL: postgresql+psycopg://pars2ray:${POSTGRES_PASSWORD}@db:5432/pars2ray
+      DATABASE_URL: postgresql+psycopg://pars2ray:${POSTGRES_PASSWORD}@db:5432/pars2ray?connect_timeout=5
       REDIS_URL: redis://redis:6379/0
     depends_on:
       db: {condition: service_healthy}
       redis: {condition: service_healthy}
+      master: {condition: service_healthy}
     security_opt:
       - no-new-privileges:true
     cap_drop: ["ALL"]
