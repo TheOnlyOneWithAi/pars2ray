@@ -1,4 +1,6 @@
 from functools import lru_cache
+from pathlib import Path
+import os
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,9 +18,6 @@ class Settings(BaseSettings):
     app_version: str = "2.2.0"
     environment: str = "production"
     debug: bool = False
-    # Native v2 intentionally defaults to SQLite so a fresh installation needs
-    # no PostgreSQL/Redis/Docker services. PostgreSQL remains supported when a
-    # deployment explicitly supplies a PostgreSQL DATABASE_URL.
     database_url: str = "sqlite:////opt/pars2ray/data/pars2ray.db"
     redis_url: str = ""
     jwt_secret: str = Field(default=_DEV_JWT, min_length=32)
@@ -84,7 +83,15 @@ class Settings(BaseSettings):
 
     @property
     def trusted_host_list(self) -> list[str]:
-        return [x.strip() for x in self.trusted_hosts.split(",") if x.strip()]
+        hosts = [x.strip() for x in self.trusted_hosts.split(",") if x.strip()]
+        domain_file = Path(os.getenv("PARS2RAY_DATA_DIR", "/opt/pars2ray/data")) / "panel-domain.txt"
+        try:
+            domain = domain_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            domain = ""
+        if domain and domain not in hosts:
+            hosts.append(domain)
+        return hosts
 
 
 @lru_cache
