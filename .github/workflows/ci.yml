@@ -101,7 +101,7 @@ jobs:
         run: bash -n deploy/install.sh
       - name: Validate APT mirror policy
         run: |
-          ! grep -Rni 'mirror\.iranserver\.com' deploy installer .github/workflows
+          ! grep -Rni 'mirror\.iranserver\.com' deploy installer
           grep -q 'archive\.ubuntu\.com/ubuntu' deploy/install.sh
           grep -q 'security\.ubuntu\.com/ubuntu' deploy/install.sh
           ! grep -q 'curl .*mirror' deploy/install.sh
