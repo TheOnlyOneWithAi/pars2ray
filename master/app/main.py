@@ -73,7 +73,17 @@ async def security_and_rate_limit(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    response.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/api/") else "public, max-age=60"
+
+    # API responses are intentionally never cached because they may contain
+    # user/session data. Vite's hashed assets are immutable and can be cached
+    # for a year, which avoids repeat downloads for panel users and materially
+    # reduces latency/bandwidth on subsequent visits.
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    elif request.url.path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    else:
+        response.headers["Cache-Control"] = "public, max-age=60"
     return response
 
 
