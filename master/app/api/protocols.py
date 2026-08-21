@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_roles
 from app.core.security import token_hash, utcnow
 from app.db.base import get_db
-from app.models.entities import Node, Route, Subscription, SystemSetting, User
+from app.models.entities import Node, Plan, Route, Subscription, SystemSetting, User
 from app.schemas import ConfigBuildRequest, PanelDomainUpdate
 from app.services import agent_client
 from app.services.config_builder import build_config
@@ -50,7 +50,7 @@ def _subscription_rows(db: Session, token: str) -> tuple[Subscription, User] | N
 
 
 def _template(db: Session) -> str:
-    return _setting(db, "subscription.html", """<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{{title}}</title><style>body{font-family:system-ui;background:#0b1020;color:#fff;max-width:900px;margin:40px auto;padding:20px}a{color:#7dd3fc}pre{white-space:pre-wrap;background:#151b2e;padding:16px;border-radius:12px}</style></head><body><h1>{{title}}</h1><p>User: {{username}}</p><p>Expires: {{expires_at}}</p><h2>Configurations</h2><pre>{{configs}}</pre></body></html>""")
+    return _setting(db, "subscription.html", """<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{{title}}</title><style>body{font-family:system-ui;background:#0b1020;color:#fff;max-width:900px;margin:40px auto;padding:20px}a{color:#7dd3fc;word-break:break-all}pre{white-space:pre-wrap;background:#151b2e;padding:16px;border-radius:12px}.card{background:#151b2e;padding:18px;border-radius:14px;margin:14px 0}.muted{opacity:.75}.links a{display:block;margin:10px 0}</style></head><body><h1>{{title}}</h1><div class=\"card\"><p>User: {{username}}</p><p>Used: {{used_gb}} GB / {{quota_gb}} GB</p><p>Remaining: {{remaining_gb}} GB ({{remaining_percent}}%)</p><p>Expires: {{expires_at}}</p><p>Days remaining: {{days_remaining}}</p></div><div class=\"card\"><h2>Subscription</h2><p><a href=\"{{subscription_url}}\">{{subscription_url}}</a></p><p><a href=\"{{raw_url}}\">Raw configuration subscription</a></p></div><div class=\"card links\"><h2>VLESS / Configurations</h2>{{vless_links}}</div><div class=\"card\"><h2>Connection instructions</h2>{{connection_instructions}}</div><div class=\"card\"><h2>All configurations</h2><pre>{{configs}}</pre></div></body></html>""")
 
 
 def _render(template: str, values: dict[str, str]) -> str:
@@ -80,7 +80,8 @@ def _connection_lines(db: Session, sub: Subscription, token: str) -> list[str]:
         server = str(data.get("server") or data.get("host") or "")
         if not server:
             node = db.scalar(select(Node).where(Node.node_key == route.node_keys[0])) if route.node_keys else None
-            server = (node.endpoint.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0] if node else "")
+            if node:
+                server = node.endpoint.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0]
         port = int(data.get("port", 443))
         name = quote(route.name, safe="")
         if route.protocol == "vless":
@@ -107,6 +108,14 @@ def _decrypt_route_config(route: Route) -> dict:
         return json.loads(decrypt_secret(route.config_enc))
     except Exception:
         return {}
+
+
+def _subscription_html_links(lines: list[str]) -> str:
+    return "".join(f'<a href="{html.escape(line, quote=True)}">{html.escape(line)}</a>' for line in lines) or '<p class="muted">No active configurations are available.</p>'
+
+
+def _connection_instructions_html() -> str:
+    return "<ol><li>Copy the subscription link and add it to your V2Ray/Xray client as a subscription URL.</li><li>Alternatively, copy an individual VLESS link above and import it as a single profile.</li><li>After importing, refresh/update the subscription in your client whenever the server configuration changes.</li><li>Keep this subscription URL private because it grants access to your configurations.</li></ol>"
 
 
 @router.post("/routes/{route_id}/build-config")
@@ -189,8 +198,33 @@ def subscription_page(token: str, request: Request, db: Session = Depends(get_db
         raise HTTPException(status_code=404, detail="subscription_not_found")
     sub, user = found
     lines = _connection_lines(db, sub, token)
-    title = _setting(db, "subscription.title", "Pars2Ray Subscription")
-    values = {"title": html.escape(title), "username": html.escape(user.username), "expires_at": html.escape(sub.expires_at.isoformat()), "token": html.escape(token), "subscription_url": html.escape(str(request.url)), "configs": html.escape("\n".join(lines)), "config_count": str(len(lines))}
+    plan = db.get(Plan, sub.plan_id)
+    quota_gb = max(float(plan.quota_gb if plan else 0), 0.0)
+    used_gb = max(float(sub.used_gb or 0), 0.0)
+    unlimited = quota_gb <= 0
+    remaining_gb = max(quota_gb - used_gb, 0.0) if not unlimited else 0.0
+    remaining_percent = 100.0 if unlimited else max(min((remaining_gb / quota_gb) * 100.0, 100.0), 0.0)
+    now = utcnow()
+    days_remaining = max((sub.expires_at - now).days, 0)
+    subscription_url = str(request.url)
+    raw_url = subscription_url.rstrip("/") + "/raw"
+    values = {
+        "title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")),
+        "username": html.escape(user.username),
+        "expires_at": html.escape(sub.expires_at.isoformat()),
+        "token": html.escape(token),
+        "subscription_url": html.escape(subscription_url, quote=True),
+        "raw_url": html.escape(raw_url, quote=True),
+        "configs": html.escape("\n".join(lines)),
+        "config_count": str(len(lines)),
+        "used_gb": f"{used_gb:.2f}",
+        "quota_gb": "Unlimited" if unlimited else f"{quota_gb:.2f}",
+        "remaining_gb": "Unlimited" if unlimited else f"{remaining_gb:.2f}",
+        "remaining_percent": "100" if unlimited else f"{remaining_percent:.1f}",
+        "days_remaining": str(days_remaining),
+        "vless_links": _subscription_html_links([line for line in lines if line.startswith("vless://")]),
+        "connection_instructions": _connection_instructions_html(),
+    }
     return HTMLResponse(_render(_template(db), values))
 
 
