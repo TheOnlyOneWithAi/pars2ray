@@ -6,7 +6,6 @@ PARS2RAY_REF="${PARS2RAY_REF:-main}"
 PARS2RAY_INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
 PARS2RAY_DATA_DIR="${PARS2RAY_DATA_DIR:-${PARS2RAY_INSTALL_DIR}/data}"
 PARS2RAY_ENV_FILE="${PARS2RAY_INSTALL_DIR}/.env"
-PARS2RAY_SERVICE_USER="${PARS2RAY_SERVICE_USER:-pars2ray}"
 PARS2RAY_FIRST_INSTALL=0
 
 log(){ printf '[pars2ray] %s\n' "$*"; }
@@ -69,12 +68,10 @@ configure_environment(){
   fi
   chmod 600 "$PARS2RAY_ENV_FILE"
   install -d -m 0750 "$PARS2RAY_DATA_DIR"
-
   local j m db
   j="$(read_env_value JWT_SECRET)"; [[ -n "$j" && "$j" != replace-with-* ]] || j="$(random_hex)"
   m="$(read_env_value MASTER_SECRET)"; [[ -n "$m" && "$m" != replace-with-* ]] || m="$(random_hex)"
   db="$(read_env_value DATABASE_URL)"; [[ "$db" == sqlite:* ]] || db="sqlite:////${PARS2RAY_DATA_DIR#/}/pars2ray.db"
-
   set_env_value ENVIRONMENT production
   set_env_value DEBUG false
   set_env_value DATABASE_URL "$db"
@@ -107,7 +104,7 @@ prepare_python(){
   local venv="$PARS2RAY_INSTALL_DIR/.venv"
   if [[ ! -x "$venv/bin/python" ]]; then python3 -m venv "$venv"; fi
   "$venv/bin/python" -m pip install --upgrade pip wheel >/dev/null
-  "$venv/bin/pip" install -r "$PARS2RAY_INSTALL_DIR/master/requirements.txt"
+  "$venv/bin/pip" install -q -r "$PARS2RAY_INSTALL_DIR/master/requirements.txt"
   printf '%s\n' "$venv"
 }
 
@@ -146,7 +143,6 @@ ReadWritePaths=$PARS2RAY_DATA_DIR
 [Install]
 WantedBy=multi-user.target
 EOF
-
   cat > "$svc/pars2ray-worker.service" <<EOF
 [Unit]
 Description=Pars2Ray Worker
@@ -171,7 +167,6 @@ ReadWritePaths=$PARS2RAY_DATA_DIR
 [Install]
 WantedBy=multi-user.target
 EOF
-
   cat > /usr/local/bin/pars2ray <<EOF
 #!/usr/bin/env bash
 set -e
