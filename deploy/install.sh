@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Pars2Ray Native Installer v3
+# Pars2Ray Native Installer v4
 # Design goals: one command, no Docker, safe re-runs, generated secrets,
-# systemd services, simple CLI, useful failure diagnostics, and conservative
-# network performance tuning for proxy nodes.
+# systemd services, simple CLI, bounded network operations, and useful failures.
 
 APP="pars2ray"
 INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
@@ -16,6 +15,9 @@ REPOSITORY="${PARS2RAY_REPOSITORY:-https://github.com/TheOnlyOneWithAi/pars2ray.
 REF="${PARS2RAY_REF:-main}"
 PORT="${PARS2RAY_PANEL_PORT:-8000}"
 VENV_DIR="${INSTALL_DIR}/.venv"
+APT_TIMEOUT="${PARS2RAY_APT_TIMEOUT:-180}"
+NETWORK_TIMEOUT="${PARS2RAY_NETWORK_TIMEOUT:-180}"
+PIP_TIMEOUT="${PARS2RAY_PIP_TIMEOUT:-300}"
 
 log(){ printf '\033[1;36m[pars2ray]\033[0m %s\n' "$*"; }
 ok(){ printf '\033[1;32m  ✓\033[0m %s\n' "$*"; }
@@ -32,6 +34,10 @@ esac
 
 command_exists(){ command -v "$1" >/dev/null 2>&1; }
 random_hex(){ openssl rand -hex 32; }
+
+require_timeout(){
+  command_exists timeout || die "The 'timeout' command is required (package: coreutils)."
+}
 
 read_env(){
   local key="$1"
@@ -62,7 +68,7 @@ wait_for_apt(){
   for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
     while fuser "$lock" >/dev/null 2>&1; do
       if (( waited >= 120 )); then
-        die "APT/DPKG lock is still held after 120s: $lock. Check unattended-upgrades/dpkg and run the installer again."
+        die "APT/DPKG lock is still held after 120s: $lock. Check unattended-upgrades/dpkg and rerun the installer."
       fi
       if (( waited == 0 )); then log "Waiting for package manager lock: $lock"; fi
       sleep 2
@@ -72,45 +78,68 @@ wait_for_apt(){
   done
 }
 
+run_bounded(){
+  local seconds="$1" label="$2" log_file="$3"
+  shift 3
+  log "$label (timeout: ${seconds}s)"
+  if timeout --foreground --kill-after=10s "${seconds}s" "$@" >"$log_file" 2>&1; then
+    return 0
+  fi
+  local rc=$?
+  warn "$label failed or timed out (exit $rc). Diagnostic output:"
+  tail -n 120 "$log_file" >&2 || true
+  return "$rc"
+}
+
 install_packages(){
   export DEBIAN_FRONTEND=noninteractive
-  log "Installing required system packages..."
-
+  require_timeout
   command_exists apt-get || die "apt-get is required on Ubuntu/Debian."
   command_exists dpkg || die "dpkg is required on Ubuntu/Debian."
+  command_exists fuser || die "fuser is required to safely inspect APT locks."
+  command_exists sed || die "sed is required."
+  command_exists tail || die "tail is required."
 
+  log "Installing required system packages..."
   wait_for_apt
+
   local dpkg_audit
   dpkg_audit="$(dpkg --audit 2>&1 || true)"
   if [[ -n "$dpkg_audit" ]]; then
     warn "dpkg reports an incomplete package configuration; repairing it first."
     printf '%s\n' "$dpkg_audit" >&2
-    dpkg --configure -a || die "dpkg repair failed. Fix the package manager and rerun the installer."
+    local dpkg_log="${TMPDIR:-/tmp}/pars2ray-dpkg.$$"
+    if ! run_bounded 120 "Repairing dpkg state" "$dpkg_log" dpkg --configure -a; then
+      rm -f "$dpkg_log"
+      die "dpkg repair failed or timed out. Fix the package manager and rerun the installer."
+    fi
+    rm -f "$dpkg_log"
   fi
 
   local apt_log="${TMPDIR:-/tmp}/pars2ray-apt.$$"
   trap 'rm -f "$apt_log"' RETURN
 
-  if ! apt-get "${apt_common_args[@]}" update -y >"$apt_log" 2>&1; then
-    warn "apt-get update failed; diagnostic output follows:"
-    sed -n '1,120p' "$apt_log" >&2 || true
+  if ! run_bounded "$APT_TIMEOUT" "Updating APT package indexes" "$apt_log" apt-get "${apt_common_args[@]}" update; then
     die "Could not update APT package indexes. Check DNS/network/repository configuration and rerun the installer."
   fi
 
-  if ! apt-get "${apt_common_args[@]}" install -y ca-certificates curl git openssl python3 python3-venv python3-pip >"$apt_log" 2>&1; then
-    warn "Package installation failed; diagnostic output follows:"
-    sed -n '1,160p' "$apt_log" >&2 || true
+  if ! run_bounded "$APT_TIMEOUT" "Installing required system packages" "$apt_log" apt-get "${apt_common_args[@]}" install -y ca-certificates curl git openssl python3 python3-venv python3-pip; then
     die "Required system packages could not be installed."
   fi
+
   rm -f "$apt_log"
   trap - RETURN
   ok "System prerequisites ready"
 }
 
 fetch_source(){
+  local git_log="${TMPDIR:-/tmp}/pars2ray-git.$$"
   if [[ -d "$INSTALL_DIR/.git" ]]; then
     log "Updating Pars2Ray source..."
-    git -C "$INSTALL_DIR" fetch --depth 1 origin "$REF" >/dev/null 2>&1 || die "Could not fetch $REF from $REPOSITORY"
+    if ! run_bounded "$NETWORK_TIMEOUT" "Fetching source from $REPOSITORY [$REF]" "$git_log" git -C "$INSTALL_DIR" fetch --depth 1 origin "$REF"; then
+      rm -f "$git_log"
+      die "Could not fetch $REF from $REPOSITORY"
+    fi
     git -C "$INSTALL_DIR" reset --hard "origin/$REF" >/dev/null || die "Could not reset source to origin/$REF"
     git -C "$INSTALL_DIR" clean -fd >/dev/null || die "Could not clean old source files"
   elif [[ -e "$INSTALL_DIR" ]]; then
@@ -118,8 +147,12 @@ fetch_source(){
   else
     log "Downloading Pars2Ray..."
     install -d -m 0755 "$(dirname "$INSTALL_DIR")"
-    git clone --depth 1 --branch "$REF" "$REPOSITORY" "$INSTALL_DIR" >/dev/null 2>&1 || die "Could not clone $REPOSITORY"
+    if ! run_bounded "$NETWORK_TIMEOUT" "Cloning $REPOSITORY [$REF]" "$git_log" git clone --depth 1 --branch "$REF" "$REPOSITORY" "$INSTALL_DIR"; then
+      rm -f "$git_log"
+      die "Could not clone $REPOSITORY"
+    fi
   fi
+  rm -f "$git_log"
   ok "Source ready"
 }
 
@@ -193,22 +226,35 @@ EOF
 
 setup_python(){
   VENV_DIR="${INSTALL_DIR}/.venv"
+  require_timeout
   if [[ ! -x "$VENV_DIR/bin/python" ]]; then
     log "Creating isolated Python environment..."
     python3 -m venv "$VENV_DIR" || die "Could not create Python virtual environment"
   fi
-  "$VENV_DIR/bin/python" -m pip install --upgrade pip wheel >/dev/null 2>&1 || die "Could not upgrade pip/wheel"
-  "$VENV_DIR/bin/pip" install -q -r "$INSTALL_DIR/master/requirements.txt" || die "Python dependency installation failed"
+  local pip_log="${TMPDIR:-/tmp}/pars2ray-pip.$$"
+  if ! run_bounded "$PIP_TIMEOUT" "Upgrading pip/wheel" "$pip_log" "$VENV_DIR/bin/python" -m pip install --upgrade pip wheel; then
+    rm -f "$pip_log"
+    die "Could not upgrade pip/wheel"
+  fi
+  if ! run_bounded "$PIP_TIMEOUT" "Installing Python dependencies" "$pip_log" "$VENV_DIR/bin/pip" install -q -r "$INSTALL_DIR/master/requirements.txt"; then
+    rm -f "$pip_log"
+    die "Python dependency installation failed"
+  fi
+  rm -f "$pip_log"
   ok "Application dependencies ready"
 }
 
 migrate(){
-  local venv="$1"
+  local venv="$1" migrate_log="${TMPDIR:-/tmp}/pars2ray-migrate.$$"
   log "Applying database migrations..."
   export DATABASE_URL="$(read_env DATABASE_URL)"
   export PYTHONPATH="$INSTALL_DIR/master"
   cd "$INSTALL_DIR"
-  "$venv/bin/alembic" upgrade head >/dev/null || die "Database migration failed"
+  if ! run_bounded 120 "Applying database migrations" "$migrate_log" "$venv/bin/alembic" upgrade head; then
+    rm -f "$migrate_log"
+    die "Database migration failed or timed out"
+  fi
+  rm -f "$migrate_log"
   ok "Database ready"
 }
 
