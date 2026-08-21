@@ -31,12 +31,20 @@ async def core_status(node):
     return await command(node, "GET_CORE_STATUS")
 
 
+async def config(node):
+    return await command(node, "GET_CONFIG")
+
+
 async def benchmark(node, payload):
     return await command(node, "RUN_BENCHMARK", payload)
 
 
 async def apply_config(node, payload):
     return await command(node, "APPLY_CONFIG", payload)
+
+
+async def update_existing_inbounds(node, updates):
+    return await command(node, "UPDATE_EXISTING_INBOUNDS", {"updates": updates})
 
 
 async def rollback(node):

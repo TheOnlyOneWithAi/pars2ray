@@ -146,8 +146,12 @@ jobs:
         run: python -m pip install --upgrade pip pip-audit bandit
       - name: Verify direct dependency pins
         run: python scripts/check_dependency_pins.py
-      - name: Audit Python dependencies
-        run: pip-audit -r master/requirements.txt -r agent/requirements.txt -r installer/requirements.txt
+      - name: Audit master dependencies
+        run: pip-audit -r master/requirements.txt
+      - name: Audit agent dependencies
+        run: pip-audit -r agent/requirements.txt
+      - name: Audit installer dependencies
+        run: pip-audit -r installer/requirements.txt
       - name: Bandit security scan
         run: bandit -r master/app agent/app installer -ll
       - name: Set up Node.js
