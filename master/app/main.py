@@ -12,7 +12,7 @@ from starlette.responses import PlainTextResponse
 
 from app.api.ai_config import router as ai_config_router
 from app.api.routes import router
-from app.api.protocols import router as protocols_router
+from app.api.protocols import public_router, router as protocols_router
 from app.api.ai_settings import router as ai_settings_router
 from app.api.node_management import router as node_management_router
 from app.core.config import settings
@@ -76,6 +76,7 @@ app.include_router(ai_settings_router)
 app.include_router(ai_config_router)
 app.include_router(router)
 app.include_router(protocols_router)
+app.include_router(public_router)
 app.include_router(node_management_router)
 
 STATIC = Path(__file__).parent / "static"
