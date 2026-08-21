@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
 import json
 import shlex
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +19,7 @@ class SSHConfig:
     host: str
     port: int
     username: str
+    host_key_fingerprint: str
     password: str | None = None
     private_key: str | None = None
     passphrase: str | None = None
@@ -23,16 +27,33 @@ class SSHConfig:
 
 def decode_config(value: str) -> SSHConfig:
     raw = json.loads(decrypt_secret(value))
-    return SSHConfig(host=str(raw["host"]).strip(), port=int(raw.get("port", 22)), username=str(raw["username"]).strip(), password=raw.get("password") or None, private_key=raw.get("private_key") or None, passphrase=raw.get("passphrase") or None)
+    return SSHConfig(host=str(raw["host"]).strip(), port=int(raw.get("port", 22)), username=str(raw["username"]).strip(), host_key_fingerprint=str(raw["host_key_fingerprint"]).strip(), password=raw.get("password") or None, private_key=raw.get("private_key") or None, passphrase=raw.get("passphrase") or None)
+
+
+def _fingerprints(key: paramiko.PKey) -> set[str]:
+    digest = hashlib.sha256(key.asbytes()).digest()
+    sha256 = "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+    md5 = ":".join(f"{byte:02x}" for byte in key.get_fingerprint())
+    return {sha256, sha256[7:], md5, md5.replace(":", "")}
 
 
 def _client(config: SSHConfig) -> paramiko.SSHClient:
-    client = paramiko.SSHClient()
     known_hosts = Path.home() / ".ssh" / "known_hosts"
     known_hosts.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    client = paramiko.SSHClient()
     if known_hosts.exists():
         client.load_host_keys(str(known_hosts))
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # Verify the server key before allowing authentication. This avoids TOFU/MITM.
+    transport = paramiko.Transport((config.host, config.port))
+    transport.banner_timeout = 15
+    transport.start_client(timeout=15)
+    server_key = transport.get_remote_server_key()
+    if config.host_key_fingerprint not in _fingerprints(server_key):
+        transport.close()
+        raise ValueError("ssh_host_key_fingerprint_mismatch")
+    transport.close()
+    client.get_host_keys().add(config.host, server_key.get_name(), server_key)
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     pkey = None
     if config.private_key:
         key_stream = io.StringIO(config.private_key)
