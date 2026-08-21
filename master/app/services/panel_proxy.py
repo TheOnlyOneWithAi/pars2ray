@@ -29,7 +29,17 @@ def render_config(domain: str, tls: bool) -> str:
     port = settings.panel_http_port
     if tls:
         return f'''server {{\n    listen 80;\n    server_name {domain};\n    location /.well-known/acme-challenge/ {{ root /var/www/letsencrypt; }}\n    location / {{ return 301 https://$host$request_uri; }}\n}}\n\nserver {{\n    listen 443 ssl http2;\n    server_name {domain};\n    ssl_certificate /etc/letsencrypt/live/{domain}/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;\n    location / {{ proxy_pass http://127.0.0.1:{port}; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto https; }}\n}}\n'''
-    return f'''server {{\n    listen 80;\n    server_name {domain};\n    location / {{ proxy_pass http://127.0.0.1:{port}; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto http; }}\n}}\n'''
+    return f'''server {{\n    listen 80;\n    server_name {domain};\n    location /.well-known/acme-challenge/ {{ root /var/www/letsencrypt; }}\n    location / {{ proxy_pass http://127.0.0.1:{port}; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto http; }}\n}}\n'''
+
+
+def _nginx_reload() -> tuple[bool, str]:
+    test = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=15, check=False)
+    if test.returncode != 0:
+        return False, (test.stderr or test.stdout)[-1200:]
+    reload_result = subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, text=True, timeout=15, check=False)
+    if reload_result.returncode != 0:
+        return False, (reload_result.stderr or reload_result.stdout)[-1200:]
+    return True, "ok"
 
 
 def apply_proxy(domain: str, tls: bool, email: str | None = None) -> dict:
@@ -39,16 +49,18 @@ def apply_proxy(domain: str, tls: bool, email: str | None = None) -> dict:
     if tls:
         if not email or "@" not in email:
             raise ValueError("valid_email_required_for_tls")
-        if not Path(f"/etc/letsencrypt/live/{domain}/fullchain.pem").exists():
+        cert_path = Path(f"/etc/letsencrypt/live/{domain}/fullchain.pem")
+        if not cert_path.exists():
+            PROXY_CONFIG.write_text(render_config(domain, False), encoding="utf-8")
+            ready, detail = _nginx_reload()
+            if not ready:
+                return {"ok": False, "reason": "nginx_config_invalid", "detail": detail}
             Path("/var/www/letsencrypt").mkdir(parents=True, exist_ok=True)
             cert = subprocess.run(["certbot", "certonly", "--webroot", "-w", "/var/www/letsencrypt", "-d", domain, "--email", email, "--agree-tos", "--non-interactive", "--keep-until-expiring"], capture_output=True, text=True, timeout=120, check=False)
             if cert.returncode != 0:
                 return {"ok": False, "reason": "certificate_issuance_failed", "detail": (cert.stderr or cert.stdout)[-1200:]}
     PROXY_CONFIG.write_text(render_config(domain, tls), encoding="utf-8")
-    test = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=15, check=False)
-    if test.returncode != 0:
-        return {"ok": False, "reason": "nginx_config_invalid", "detail": (test.stderr or test.stdout)[-1200:]}
-    reload_result = subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, text=True, timeout=15, check=False)
-    if reload_result.returncode != 0:
-        return {"ok": False, "reason": "nginx_reload_failed", "detail": (reload_result.stderr or reload_result.stdout)[-1200:]}
+    ready, detail = _nginx_reload()
+    if not ready:
+        return {"ok": False, "reason": "nginx_reload_failed", "detail": detail}
     return {"ok": True, "domain": domain, "tls": tls, "url": f"https://{domain}" if tls else f"http://{domain}"}
