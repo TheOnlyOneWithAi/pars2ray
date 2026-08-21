@@ -63,17 +63,12 @@ apt_common_args=(
   -o DPkg::Lock::Timeout=120
 )
 
-# Pars2Ray deliberately uses well-known official distribution mirrors instead
-# of inheriting an arbitrary VPS/provider mirror. This avoids slow/unreachable
-# provider mirrors such as mirror.iranserver.com while keeping package metadata
-# signed and supplied by the distribution's official archive infrastructure.
 APT_SOURCES_FILE="${TMPDIR:-/tmp}/pars2ray-apt-sources.list"
 
 configure_reliable_apt_sources(){
   local codename="${VERSION_CODENAME:-}"
   [[ -n "$codename" ]] || codename="$(lsb_release -cs 2>/dev/null || true)"
   [[ -n "$codename" ]] || die "Could not determine distribution codename."
-
   case "${ID:-}" in
     ubuntu)
       cat > "$APT_SOURCES_FILE" <<EOF
@@ -97,11 +92,7 @@ EOF
 }
 
 apt_with_reliable_sources(){
-  apt-get "${apt_common_args[@]}" \
-    -o Dir::Etc::sourcelist="$APT_SOURCES_FILE" \
-    -o Dir::Etc::sourceparts="-" \
-    -o APT::Get::List-Cleanup="0" \
-    "$@"
+  apt-get "${apt_common_args[@]}" -o Dir::Etc::sourcelist="$APT_SOURCES_FILE" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0" "$@"
 }
 
 wait_for_apt(){
@@ -113,9 +104,7 @@ wait_for_apt(){
   for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
     [[ -e "$lock" ]] || continue
     while fuser "$lock" >/dev/null 2>&1; do
-      if (( waited >= 120 )); then
-        die "APT/DPKG lock is still held after 120s: $lock. Check unattended-upgrades/dpkg and rerun the installer."
-      fi
+      if (( waited >= 120 )); then die "APT/DPKG lock is still held after 120s: $lock. Check unattended-upgrades/dpkg and rerun the installer."; fi
       if (( waited == 0 )); then log "Waiting for package manager lock: $lock"; fi
       sleep 2
       ((waited+=2))
@@ -128,11 +117,7 @@ run_bounded(){
   local seconds="$1" label="$2" log_file="$3" rc
   shift 3
   log "$label (timeout: ${seconds}s)"
-  if timeout --foreground --kill-after=10s "${seconds}s" "$@" >"$log_file" 2>&1; then
-    return 0
-  else
-    rc=$?
-  fi
+  if timeout --foreground --kill-after=10s "${seconds}s" "$@" >"$log_file" 2>&1; then return 0; else rc=$?; fi
   warn "$label failed or timed out (exit $rc). Diagnostic output:"
   tail -n 120 "$log_file" >&2 || true
   return "$rc"
@@ -145,35 +130,23 @@ install_packages(){
   command_exists dpkg || die "dpkg is required on Ubuntu/Debian."
   command_exists sed || die "sed is required."
   command_exists tail || die "tail is required."
-
   log "Installing required system packages..."
   configure_reliable_apt_sources
   trap 'rm -f "$APT_SOURCES_FILE"' EXIT
   wait_for_apt
-
   local dpkg_audit
   dpkg_audit="$(dpkg --audit 2>&1 || true)"
   if [[ -n "$dpkg_audit" ]]; then
     warn "dpkg reports an incomplete package configuration; repairing it first."
     printf '%s\n' "$dpkg_audit" >&2
     local dpkg_log="${TMPDIR:-/tmp}/pars2ray-dpkg.$$"
-    if ! run_bounded 120 "Repairing dpkg state" "$dpkg_log" dpkg --configure -a; then
-      rm -f "$dpkg_log"
-      die "dpkg repair failed or timed out. Fix the package manager and rerun the installer."
-    fi
+    if ! run_bounded 120 "Repairing dpkg state" "$dpkg_log" dpkg --configure -a; then rm -f "$dpkg_log"; die "dpkg repair failed or timed out. Fix the package manager and rerun the installer."; fi
     rm -f "$dpkg_log"
   fi
-
   local apt_log="${TMPDIR:-/tmp}/pars2ray-apt.$$"
   local apt_source_args=(-o Dir::Etc::sourcelist="$APT_SOURCES_FILE" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0")
-  if ! run_bounded "$APT_TIMEOUT" "Updating APT package indexes" "$apt_log" apt-get "${apt_common_args[@]}" "${apt_source_args[@]}" update; then
-    die "Could not update APT package indexes using the official mirrors. Check DNS/network access and rerun the installer."
-  fi
-
-  if ! run_bounded "$APT_TIMEOUT" "Installing required system packages" "$apt_log" apt-get "${apt_common_args[@]}" "${apt_source_args[@]}" install -y ca-certificates curl git openssl python3 python3-venv python3-pip; then
-    die "Required system packages could not be installed from the official mirrors."
-  fi
-
+  if ! run_bounded "$APT_TIMEOUT" "Updating APT package indexes" "$apt_log" apt-get "${apt_common_args[@]}" "${apt_source_args[@]}" update; then die "Could not update APT package indexes using the official mirrors. Check DNS/network access and rerun the installer."; fi
+  if ! run_bounded "$APT_TIMEOUT" "Installing required system packages" "$apt_log" apt-get "${apt_common_args[@]}" "${apt_source_args[@]}" install -y ca-certificates curl git openssl python3 python3-venv python3-pip; then die "Required system packages could not be installed from the official mirrors."; fi
   rm -f "$apt_log"
   ok "System prerequisites ready"
 }
@@ -182,10 +155,7 @@ fetch_source(){
   local git_log="${TMPDIR:-/tmp}/pars2ray-git.$$"
   if [[ -d "$INSTALL_DIR/.git" ]]; then
     log "Updating Pars2Ray source..."
-    if ! run_bounded "$NETWORK_TIMEOUT" "Fetching source from $REPOSITORY [$REF]" "$git_log" git -C "$INSTALL_DIR" fetch --depth 1 origin "$REF"; then
-      rm -f "$git_log"
-      die "Could not fetch $REF from $REPOSITORY"
-    fi
+    if ! run_bounded "$NETWORK_TIMEOUT" "Fetching source from $REPOSITORY [$REF]" "$git_log" git -C "$INSTALL_DIR" fetch --depth 1 origin "$REF"; then rm -f "$git_log"; die "Could not fetch $REF from $REPOSITORY"; fi
     git -C "$INSTALL_DIR" reset --hard "origin/$REF" >/dev/null || die "Could not reset source to origin/$REF"
     git -C "$INSTALL_DIR" clean -fd >/dev/null || die "Could not clean old source files"
   elif [[ -e "$INSTALL_DIR" ]]; then
@@ -193,10 +163,7 @@ fetch_source(){
   else
     log "Downloading Pars2Ray..."
     install -d -m 0755 "$(dirname "$INSTALL_DIR")"
-    if ! run_bounded "$NETWORK_TIMEOUT" "Cloning $REPOSITORY [$REF]" "$git_log" git clone --depth 1 --branch "$REF" "$REPOSITORY" "$INSTALL_DIR"; then
-      rm -f "$git_log"
-      die "Could not clone $REPOSITORY"
-    fi
+    if ! run_bounded "$NETWORK_TIMEOUT" "Cloning $REPOSITORY [$REF]" "$git_log" git clone --depth 1 --branch "$REF" "$REPOSITORY" "$INSTALL_DIR"; then rm -f "$git_log"; die "Could not clone $REPOSITORY"; fi
   fi
   rm -f "$git_log"
   ok "Source ready"
@@ -206,13 +173,11 @@ ensure_defaults(){
   install -d -m 0750 "$ETC_DIR" "$DATA_DIR"
   touch "$ENV_FILE"
   chmod 0600 "$ENV_FILE"
-
   local jwt master db host
   jwt="$(read_env JWT_SECRET)"; [[ -n "$jwt" ]] || jwt="$(random_hex)"
   master="$(read_env MASTER_SECRET)"; [[ -n "$master" ]] || master="$(random_hex)"
   db="$(read_env DATABASE_URL)"; [[ "$db" == sqlite:* ]] || db="sqlite:////${DATA_DIR#/}/pars2ray.db"
   host="$(hostname -I 2>/dev/null | awk '{print $1}')"; host="${host:-127.0.0.1}"
-
   set_env ENVIRONMENT production
   set_env DEBUG false
   set_env DATABASE_URL "$db"
@@ -278,14 +243,8 @@ setup_python(){
     python3 -m venv "$VENV_DIR" || die "Could not create Python virtual environment"
   fi
   local pip_log="${TMPDIR:-/tmp}/pars2ray-pip.$$"
-  if ! run_bounded "$PIP_TIMEOUT" "Upgrading pip/wheel" "$pip_log" "$VENV_DIR/bin/python" -m pip install --upgrade pip wheel; then
-    rm -f "$pip_log"
-    die "Could not upgrade pip/wheel"
-  fi
-  if ! run_bounded "$PIP_TIMEOUT" "Installing Python dependencies" "$pip_log" "$VENV_DIR/bin/pip" install -q -r "$INSTALL_DIR/master/requirements.txt"; then
-    rm -f "$pip_log"
-    die "Python dependency installation failed"
-  fi
+  if ! run_bounded "$PIP_TIMEOUT" "Upgrading pip/wheel" "$pip_log" "$VENV_DIR/bin/python" -m pip install --upgrade pip wheel; then rm -f "$pip_log"; die "Could not upgrade pip/wheel"; fi
+  if ! run_bounded "$PIP_TIMEOUT" "Installing Python dependencies" "$pip_log" "$VENV_DIR/bin/pip" install -q -r "$INSTALL_DIR/master/requirements.txt"; then rm -f "$pip_log"; die "Python dependency installation failed"; fi
   rm -f "$pip_log"
   ok "Application dependencies ready"
 }
@@ -293,8 +252,20 @@ setup_python(){
 migrate(){
   local venv="$1" migrate_log="${TMPDIR:-/tmp}/pars2ray-migrate.$$"
   log "Applying database migrations..."
+  [[ -r "$ENV_FILE" ]] || die "Pars2Ray environment file is missing: $ENV_FILE"
+  # Alembic runs as a standalone process and Pydantic's default `.env` lookup
+  # is relative to the current working directory. The installer stores the
+  # authoritative production configuration in /etc/pars2ray/pars2ray.env, so
+  # explicitly export that file for the migration process as well.
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
   export DATABASE_URL="$(read_env DATABASE_URL)"
   export PYTHONPATH="$INSTALL_DIR/master"
+  [[ -n "${JWT_SECRET:-}" ]] || die "JWT_SECRET is missing from $ENV_FILE"
+  [[ -n "${MASTER_SECRET:-}" ]] || die "MASTER_SECRET is missing from $ENV_FILE"
+  [[ -n "${ADMIN_PASSWORD:-}" ]] || die "ADMIN_PASSWORD is missing from $ENV_FILE"
   cd "$INSTALL_DIR"
   if ! run_bounded 120 "Applying database migrations" "$migrate_log" "$venv/bin/alembic" upgrade head; then
     rm -f "$migrate_log"
@@ -386,9 +357,7 @@ tune_network(){
   available="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
   if grep -qw bbr <<<"$available"; then
     current="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
-    if [[ "$current" != "bbr" ]]; then
-      sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
-    fi
+    if [[ "$current" != "bbr" ]]; then sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true; fi
     cat > /etc/sysctl.d/99-pars2ray-network.conf <<'EOF'
 # Pars2Ray: use BBR when supported by the kernel.
 net.ipv4.tcp_congestion_control=bbr
