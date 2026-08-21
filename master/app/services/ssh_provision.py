@@ -6,7 +6,6 @@ import io
 import json
 import shlex
 from dataclasses import dataclass
-from pathlib import Path
 
 import paramiko
 
@@ -37,26 +36,24 @@ def _fingerprints(key: paramiko.PKey) -> set[str]:
 
 
 def _client(config: SSHConfig) -> paramiko.SSHClient:
-    known_hosts = Path.home() / ".ssh" / "known_hosts"
-    known_hosts.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    """Build an SSH client without requiring a writable local HOME."""
     client = paramiko.SSHClient()
-    if known_hosts.exists():
-        client.load_host_keys(str(known_hosts))
+    client.get_host_keys().clear()
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
-    # A fingerprint can still be supplied by trusted callers. For the simple
-    # node-provisioning flow it is intentionally optional: the first successful
-    # SSH connection pins the server key in the panel's known_hosts file.
     transport = paramiko.Transport((config.host, config.port))
     transport.banner_timeout = 15
-    transport.start_client(timeout=15)
-    server_key = transport.get_remote_server_key()
-    if config.host_key_fingerprint and config.host_key_fingerprint not in _fingerprints(server_key):
+    try:
+        transport.start_client(timeout=15)
+        server_key = transport.get_remote_server_key()
+        if config.host_key_fingerprint and config.host_key_fingerprint not in _fingerprints(server_key):
+            raise ValueError("ssh_host_key_fingerprint_mismatch")
+    finally:
         transport.close()
-        raise ValueError("ssh_host_key_fingerprint_mismatch")
-    transport.close()
 
+    # Pin the verified key only in memory. Never create/read/write ~/.ssh.
+    # This keeps provisioning compatible with read-only /root filesystems.
     client.get_host_keys().add(config.host, server_key.get_name(), server_key)
-    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     pkey = None
     if config.private_key:
         key_stream = io.StringIO(config.private_key)
@@ -70,7 +67,6 @@ def _client(config: SSHConfig) -> paramiko.SSHClient:
         if pkey is None:
             raise ValueError("invalid_private_key")
     client.connect(config.host, port=config.port, username=config.username, password=config.password, pkey=pkey, timeout=15, banner_timeout=15, auth_timeout=15, look_for_keys=False, allow_agent=False)
-    client.save_host_keys(str(known_hosts))
     return client
 
 
