@@ -165,11 +165,12 @@ install_packages(){
   fi
 
   local apt_log="${TMPDIR:-/tmp}/pars2ray-apt.$$"
-  if ! run_bounded "$APT_TIMEOUT" "Updating APT package indexes" "$apt_log" apt_with_reliable_sources update; then
+  local apt_source_args=(-o Dir::Etc::sourcelist="$APT_SOURCES_FILE" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0")
+  if ! run_bounded "$APT_TIMEOUT" "Updating APT package indexes" "$apt_log" apt-get "${apt_common_args[@]}" "${apt_source_args[@]}" update; then
     die "Could not update APT package indexes using the official mirrors. Check DNS/network access and rerun the installer."
   fi
 
-  if ! run_bounded "$APT_TIMEOUT" "Installing required system packages" "$apt_log" apt_with_reliable_sources install -y ca-certificates curl git openssl python3 python3-venv python3-pip; then
+  if ! run_bounded "$APT_TIMEOUT" "Installing required system packages" "$apt_log" apt-get "${apt_common_args[@]}" "${apt_source_args[@]}" install -y ca-certificates curl git openssl python3 python3-venv python3-pip; then
     die "Required system packages could not be installed from the official mirrors."
   fi
 
