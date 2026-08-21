@@ -35,7 +35,7 @@ random_hex(){ openssl rand -hex 32; }
 read_env(){
   local key="$1"
   [[ -f "$ENV_FILE" ]] || return 0
-  awk -F= -v k="$key" '$1==k{sub(/^[^=]*=/," "); sub(/^ /,""); print; exit}' "$ENV_FILE"
+  awk -F= -v k="$key" '$1==k{sub(/^[^=]*=/,""); print; exit}' "$ENV_FILE"
 }
 
 set_env(){
@@ -97,9 +97,7 @@ ensure_defaults(){
 
 prompt(){
   local label="$1" default="${2:-}" value
-  if [[ -n "${PARS2RAY_NONINTERACTIVE:-}" || ! -t 0 ]]; then
-    printf '%s' "$default"; return
-  fi
+  if [[ -n "${PARS2RAY_NONINTERACTIVE:-}" || ! -t 0 ]]; then printf '%s' "$default"; return; fi
   read -r -p "$label${default:+ [$default]}: " value || true
   printf '%s' "${value:-$default}"
 }
