@@ -56,7 +56,7 @@ class Permission(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(80), unique=True, index=True)
-    roles: Mapped[list[Role]] = relationship(secondary=role_permissions, back_populates="roles")
+    roles: Mapped[list[Role]] = relationship(secondary=role_permissions, back_populates="permissions")
 
 
 class Node(Base):
@@ -178,96 +178,3 @@ class Plan(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
     quota_gb: Mapped[float] = mapped_column(Float, default=0)
-    duration_days: Mapped[int] = mapped_column(Integer, default=30)
-    max_devices: Mapped[int] = mapped_column(Integer, default=1)
-    price_minor: Mapped[int] = mapped_column(Integer, default=0)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-
-
-class Subscription(Base):
-    __tablename__ = "subscriptions"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    plan_id: Mapped[int] = mapped_column(ForeignKey("plans.id", ondelete="RESTRICT"), index=True)
-    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
-    node_keys: Mapped[list] = mapped_column(JSON, default=list)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    used_gb: Mapped[float] = mapped_column(Float, default=0)
-    expires_at: Mapped[datetime] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
-
-class ApiKey(Base):
-    __tablename__ = "api_keys"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    name: Mapped[str] = mapped_column(String(100))
-    key_prefix: Mapped[str] = mapped_column(String(16), index=True)
-    key_hash: Mapped[str] = mapped_column(String(128), unique=True)
-    scopes: Mapped[list] = mapped_column(JSON, default=list)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
-
-class RefreshToken(Base):
-    __tablename__ = "refresh_tokens"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
-
-class AuditLog(Base):
-    __tablename__ = "audit_logs"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    action: Mapped[str] = mapped_column(String(120), index=True)
-    resource_type: Mapped[str] = mapped_column(String(80), default="")
-    resource_id: Mapped[str] = mapped_column(String(80), default="")
-    ip_address: Mapped[str] = mapped_column(String(64), default="")
-    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-
-
-class SystemSetting(Base):
-    __tablename__ = "system_settings"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
-    value_enc: Mapped[str] = mapped_column(Text)
-    is_secret: Mapped[bool] = mapped_column(Boolean, default=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-class SystemState(Base):
-    __tablename__ = "system_state"
-
-    id: Mapped[int] = mapped_column(primary_key=True, default=1)
-    mode: Mapped[str] = mapped_column(String(24), default="NORMAL")
-    international_failures: Mapped[int] = mapped_column(Integer, default=0)
-    international_successes: Mapped[int] = mapped_column(Integer, default=0)
-    ai_status: Mapped[str] = mapped_column(String(24), default="DISABLED")
-    optimizer_status: Mapped[str] = mapped_column(String(24), default="IDLE")
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-class ResearchFinding(Base):
-    __tablename__ = "research_findings"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    source: Mapped[str] = mapped_column(String(80), index=True)
-    version: Mapped[str] = mapped_column(String(80), index=True)
-    title: Mapped[str] = mapped_column(String(255), default="")
-    notes: Mapped[str] = mapped_column(Text, default="")
-    url: Mapped[str] = mapped_column(String(500), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-
-    __table_args__ = (UniqueConstraint("source", "version", name="uq_research_source_version"),)
