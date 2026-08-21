@@ -99,6 +99,12 @@ jobs:
         run: python -c "import installer.bootstrap; import installer.discover_nodes; import installer.generate_env"
       - name: Validate Native Installer syntax
         run: bash -n deploy/install.sh
+      - name: Validate APT mirror policy
+        run: |
+          ! grep -Rni 'mirror\.iranserver\.com' deploy installer .github/workflows
+          grep -q 'archive\.ubuntu\.com/ubuntu' deploy/install.sh
+          grep -q 'security\.ubuntu\.com/ubuntu' deploy/install.sh
+          ! grep -q 'curl .*mirror' deploy/install.sh
       - name: Validate installer files
         run: |
           test -s deploy/install.sh
