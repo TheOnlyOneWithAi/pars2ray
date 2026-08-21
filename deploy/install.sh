@@ -3,7 +3,8 @@ set -Eeuo pipefail
 
 # Pars2Ray Native Installer v3
 # Design goals: one command, no Docker, safe re-runs, generated secrets,
-# systemd services, simple CLI, and useful failure diagnostics.
+# systemd services, simple CLI, useful failure diagnostics, and conservative
+# network performance tuning for proxy nodes.
 
 APP="pars2ray"
 INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
@@ -29,13 +30,12 @@ case "${ID:-}" in
 esac
 
 command_exists(){ command -v "$1" >/dev/null 2>&1; }
-
 random_hex(){ openssl rand -hex 32; }
 
 read_env(){
   local key="$1"
   [[ -f "$ENV_FILE" ]] || return 0
-  awk -F= -v k="$key" '$1==k{sub(/^[^=]*=/,""); print; exit}' "$ENV_FILE"
+  awk -F= -v k="$key" '$1==k{sub(/^[^=]*=/," "); sub(/^ /,""); print; exit}' "$ENV_FILE"
 }
 
 set_env(){
@@ -98,8 +98,7 @@ ensure_defaults(){
 prompt(){
   local label="$1" default="${2:-}" value
   if [[ -n "${PARS2RAY_NONINTERACTIVE:-}" || ! -t 0 ]]; then
-    printf '%s' "$default"
-    return
+    printf '%s' "$default"; return
   fi
   read -r -p "$label${default:+ [$default]}: " value || true
   printf '%s' "${value:-$default}"
@@ -107,12 +106,8 @@ prompt(){
 
 prompt_password(){
   local value confirm
-  if [[ -n "${PARS2RAY_ADMIN_PASSWORD:-}" ]]; then
-    printf '%s' "$PARS2RAY_ADMIN_PASSWORD"; return
-  fi
-  if [[ -n "${PARS2RAY_NONINTERACTIVE:-}" || ! -t 0 ]]; then
-    printf '%s' "$(random_hex)$(random_hex)"; return
-  fi
+  if [[ -n "${PARS2RAY_ADMIN_PASSWORD:-}" ]]; then printf '%s' "$PARS2RAY_ADMIN_PASSWORD"; return; fi
+  if [[ -n "${PARS2RAY_NONINTERACTIVE:-}" || ! -t 0 ]]; then printf '%s' "$(random_hex)$(random_hex)"; return; fi
   while :; do
     read -r -s -p "Panel password (12+ chars): " value || true; printf '\n'
     (( ${#value} >= 12 )) || { warn "Password must be at least 12 characters."; continue; }
@@ -125,28 +120,16 @@ prompt_password(){
 first_run(){
   local existing_user user email password host
   existing_user="$(read_env ADMIN_USER)"
-  if [[ -n "$existing_user" ]]; then
-    ok "Existing installation detected; keeping panel credentials and settings"
-    return
-  fi
-
+  if [[ -n "$existing_user" ]]; then ok "Existing installation detected; keeping panel credentials and settings"; return; fi
   printf '\n\033[1;35m=== Pars2Ray setup ===\033[0m\n'
   printf 'A small first-run wizard will create the panel account.\n\n'
-
   user="${PARS2RAY_ADMIN_USER:-$(prompt 'Username' 'admin')}"
   [[ "$user" =~ ^[A-Za-z0-9_.-]{3,64}$ ]] || die "Username must be 3-64 characters: letters, numbers, _, ., -"
   email="${PARS2RAY_ADMIN_EMAIL:-$(prompt 'Email' 'admin@localhost')}"
   [[ "$email" == *@*.* || "$email" == *@localhost ]] || die "Invalid email address"
   password="$(prompt_password)"
-  host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}') }"
-  host="${host// /}"; host="${host:-localhost}"
-
-  set_env ADMIN_USER "$user"
-  set_env ADMIN_EMAIL "$email"
-  set_env ADMIN_PASSWORD "$password"
-  set_env PANEL_HTTP_PORT "$PORT"
-  set_env TRUSTED_HOSTS "localhost,127.0.0.1,$host"
-
+  host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}') }"; host="${host// /}"; host="${host:-localhost}"
+  set_env ADMIN_USER "$user"; set_env ADMIN_EMAIL "$email"; set_env ADMIN_PASSWORD "$password"; set_env PANEL_HTTP_PORT "$PORT"; set_env TRUSTED_HOSTS "localhost,127.0.0.1,$host"
   cat > "$CREDENTIALS_FILE" <<EOF
 Pars2Ray installation
 =====================
@@ -162,10 +145,7 @@ EOF
 
 setup_python(){
   local venv="$INSTALL_DIR/.venv"
-  if [[ ! -x "$venv/bin/python" ]]; then
-    log "Creating isolated Python environment..."
-    python3 -m venv "$venv"
-  fi
+  if [[ ! -x "$venv/bin/python" ]]; then log "Creating isolated Python environment..."; python3 -m venv "$venv"; fi
   "$venv/bin/python" -m pip install --upgrade pip wheel >/dev/null 2>&1
   "$venv/bin/pip" install -q -r "$INSTALL_DIR/master/requirements.txt" || die "Python dependency installation failed"
   ok "Application dependencies ready"
@@ -175,9 +155,7 @@ setup_python(){
 migrate(){
   local venv="$1"
   log "Applying database migrations..."
-  export DATABASE_URL="$(read_env DATABASE_URL)"
-  export PYTHONPATH="$INSTALL_DIR/master"
-  cd "$INSTALL_DIR"
+  export DATABASE_URL="$(read_env DATABASE_URL)"; export PYTHONPATH="$INSTALL_DIR/master"; cd "$INSTALL_DIR"
   "$venv/bin/alembic" upgrade head >/dev/null || die "Database migration failed"
   ok "Database ready"
 }
@@ -196,9 +174,10 @@ User=root
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=$ENV_FILE
 Environment=PYTHONPATH=$INSTALL_DIR/master
-ExecStart=$venv/bin/uvicorn app.main:app --app-dir $INSTALL_DIR/master --host 0.0.0.0 --port $PORT --proxy-headers --timeout-keep-alive 15
+ExecStart=$venv/bin/uvicorn app.main:app --app-dir $INSTALL_DIR/master --host 0.0.0.0 --port $PORT --proxy-headers --timeout-keep-alive 30 --limit-concurrency 1024
 Restart=on-failure
 RestartSec=3
+LimitNOFILE=65535
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
@@ -224,6 +203,7 @@ Environment=PYTHONPATH=$INSTALL_DIR/master
 ExecStart=$venv/bin/python -m app.worker
 Restart=on-failure
 RestartSec=5
+LimitNOFILE=65535
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
@@ -255,16 +235,38 @@ EOF
   ok "systemd services installed"
 }
 
+# Enable BBR when the running kernel supports it. This is intentionally
+# best-effort and never prevents installation. BBR generally improves
+# throughput and latency under loss/congestion without hard-coding unsafe
+# buffer sizes or changing firewall behavior.
+tune_network(){
+  [[ "${PARS2RAY_TUNE_NETWORK:-1}" == "1" ]] || { warn "Network tuning disabled by PARS2RAY_TUNE_NETWORK=0"; return; }
+  command_exists sysctl || return
+  local available current
+  available="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
+  if grep -qw bbr <<<"$available"; then
+    current="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+    if [[ "$current" != "bbr" ]]; then
+      sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+    fi
+    cat > /etc/sysctl.d/99-pars2ray-network.conf <<'EOF'
+# Pars2Ray: use BBR when supported by the kernel.
+net.ipv4.tcp_congestion_control=bbr
+EOF
+    sysctl --system >/dev/null 2>&1 || true
+    ok "TCP BBR enabled for supported kernels"
+  else
+    warn "Kernel does not expose BBR; keeping the system congestion-control defaults"
+  fi
+}
+
 health_check(){
   local attempt url="http://127.0.0.1:${PORT}/health"
   log "Starting Pars2Ray..."
   systemctl restart pars2ray-master
   for attempt in $(seq 1 45); do
     if curl -fsS --connect-timeout 1 --max-time 2 "$url" >/dev/null 2>&1; then
-      ok "Panel is responding"
-      systemctl restart pars2ray-worker
-      ok "Worker started"
-      return 0
+      ok "Panel is responding"; systemctl restart pars2ray-worker; ok "Worker started"; return 0
     fi
     sleep 1
   done
@@ -283,8 +285,7 @@ print_result(){
   printf ' Username:    %s\n' "$user"
   printf ' Credentials: %s\n' "$CREDENTIALS_FILE"
   printf ' CLI:         pars2ray status\n'
-  printf ' Logs:        pars2ray logs\n'
-  printf '\n'
+  printf ' Logs:        pars2ray logs\n\n'
 }
 
 main(){
@@ -295,6 +296,7 @@ main(){
   local venv; venv="$(setup_python)"
   migrate "$venv"
   write_services "$venv"
+  tune_network
   health_check
   print_result
 }
