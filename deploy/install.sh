@@ -65,7 +65,14 @@ apt_common_args=(
 
 wait_for_apt(){
   local waited=0 lock
+  # fuser is provided by psmisc and is NOT guaranteed to exist on a minimal
+  # Ubuntu/Debian image. Never make it a prerequisite for installing packages.
+  if ! command_exists fuser; then
+    log "fuser not installed; relying on APT/DPKG lock timeouts"
+    return 0
+  fi
   for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
+    [[ -e "$lock" ]] || continue
     while fuser "$lock" >/dev/null 2>&1; do
       if (( waited >= 120 )); then
         die "APT/DPKG lock is still held after 120s: $lock. Check unattended-upgrades/dpkg and rerun the installer."
@@ -97,7 +104,6 @@ install_packages(){
   require_timeout
   command_exists apt-get || die "apt-get is required on Ubuntu/Debian."
   command_exists dpkg || die "dpkg is required on Ubuntu/Debian."
-  command_exists fuser || die "fuser is required to safely inspect APT locks."
   command_exists sed || die "sed is required."
   command_exists tail || die "tail is required."
 
