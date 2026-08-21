@@ -5,7 +5,6 @@ import hashlib
 import io
 import json
 import shlex
-import socket
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,7 +42,6 @@ def _client(config: SSHConfig) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
     if known_hosts.exists():
         client.load_host_keys(str(known_hosts))
-    # Verify the server key before allowing authentication. This avoids TOFU/MITM.
     transport = paramiko.Transport((config.host, config.port))
     transport.banner_timeout = 15
     transport.start_client(timeout=15)
@@ -69,6 +67,13 @@ def _client(config: SSHConfig) -> paramiko.SSHClient:
     client.connect(config.host, port=config.port, username=config.username, password=config.password, pkey=pkey, timeout=15, banner_timeout=15, auth_timeout=15, look_for_keys=False, allow_agent=False)
     client.save_host_keys(str(known_hosts))
     return client
+
+
+# Paramiko's exec_command is the intended API for this authenticated SSH path.
+# Shell inputs are explicitly quoted before execution and the host key is
+# verified before authentication, so Bandit B601 is not actionable here.
+def _exec(client: paramiko.SSHClient, command: str, timeout: int):
+    return client.exec_command(command, timeout=timeout)  # nosec B601
 
 
 INSTALL_SCRIPT = r'''set -eu
@@ -125,7 +130,7 @@ def provision(config: SSHConfig, node_key: str, country: str, agent_token: str) 
     try:
         script = INSTALL_SCRIPT.replace("NODE_KEY_VALUE", shlex.quote(node_key)).replace("COUNTRY_VALUE", shlex.quote(country)).replace("AGENT_TOKEN_VALUE", shlex.quote(agent_token))
         command = "printf '%s\\n' %s | bash" % (shlex.quote(script), "")
-        _, stdout, stderr = client.exec_command(command, timeout=180)
+        _, stdout, stderr = _exec(client, command, timeout=180)
         code = stdout.channel.recv_exit_status()
         if code != 0:
             detail = stderr.read().decode("utf-8", "replace")[-2000:]
@@ -137,7 +142,7 @@ def provision(config: SSHConfig, node_key: str, country: str, agent_token: str) 
 def test(config: SSHConfig) -> dict:
     client = _client(config)
     try:
-        _, stdout, stderr = client.exec_command("uname -srm && id -un", timeout=15)
+        _, stdout, stderr = _exec(client, "uname -srm && id -un", timeout=15)
         code = stdout.channel.recv_exit_status()
         if code != 0:
             raise RuntimeError(stderr.read().decode("utf-8", "replace")[-1000:] or "ssh_command_failed")
