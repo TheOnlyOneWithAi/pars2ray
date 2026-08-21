@@ -14,7 +14,7 @@ COPY master/requirements.txt ./requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip pip install --no-compile -r requirements.txt
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 COPY master/app ./app
-COPY --from=frontend-build /src/frontend/dist ./app/static
+COPY --from=frontend-build /src/master/app/static ./app/static
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 COPY deploy/scripts ./scripts
