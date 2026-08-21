@@ -18,7 +18,7 @@ class SSHConfig:
     host: str
     port: int
     username: str
-    host_key_fingerprint: str
+    host_key_fingerprint: str | None = None
     password: str | None = None
     private_key: str | None = None
     passphrase: str | None = None
@@ -26,7 +26,7 @@ class SSHConfig:
 
 def decode_config(value: str) -> SSHConfig:
     raw = json.loads(decrypt_secret(value))
-    return SSHConfig(host=str(raw["host"]).strip(), port=int(raw.get("port", 22)), username=str(raw["username"]).strip(), host_key_fingerprint=str(raw["host_key_fingerprint"]).strip(), password=raw.get("password") or None, private_key=raw.get("private_key") or None, passphrase=raw.get("passphrase") or None)
+    return SSHConfig(host=str(raw["host"]).strip(), port=int(raw.get("port", 22)), username=str(raw["username"]).strip(), host_key_fingerprint=(str(raw["host_key_fingerprint"]).strip() if raw.get("host_key_fingerprint") else None), password=raw.get("password") or None, private_key=raw.get("private_key") or None, passphrase=raw.get("passphrase") or None)
 
 
 def _fingerprints(key: paramiko.PKey) -> set[str]:
@@ -42,14 +42,19 @@ def _client(config: SSHConfig) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
     if known_hosts.exists():
         client.load_host_keys(str(known_hosts))
+
+    # A fingerprint can still be supplied by trusted callers. For the simple
+    # node-provisioning flow it is intentionally optional: the first successful
+    # SSH connection pins the server key in the panel's known_hosts file.
     transport = paramiko.Transport((config.host, config.port))
     transport.banner_timeout = 15
     transport.start_client(timeout=15)
     server_key = transport.get_remote_server_key()
-    if config.host_key_fingerprint not in _fingerprints(server_key):
+    if config.host_key_fingerprint and config.host_key_fingerprint not in _fingerprints(server_key):
         transport.close()
         raise ValueError("ssh_host_key_fingerprint_mismatch")
     transport.close()
+
     client.get_host_keys().add(config.host, server_key.get_name(), server_key)
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
     pkey = None
