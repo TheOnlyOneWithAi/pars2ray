@@ -33,7 +33,8 @@ export function AdminSettingsPage({ notify }: Props) {
       <p className="helper-text">Point the domain's A/AAAA record to this server first. Pars2Ray installs nginx and obtains/renews the certificate automatically.</p>
     </Panel>
     <Panel title="Subscription page HTML" eyebrow="SUPER ADMIN ONLY" className="page-panel">
-      <p className="helper-text">Full HTML is allowed. Available placeholders: <code>{'{{title}}'}</code> <code>{'{{username}}'}</code> <code>{'{{expires_at}}'}</code> <code>{'{{token}}'}</code> <code>{'{{subscription_url}}'}</code> <code>{'{{configs}}'}</code> <code>{'{{config_count}}'}</code>.</p>
+      <p className="helper-text">Full HTML is allowed. Available placeholders: <code>{'{{title}}'}</code> <code>{'{{username}}'}</code> <code>{'{{expires_at}}'}</code> <code>{'{{token}}'}</code> <code>{'{{subscription_url}}'}</code> <code>{'{{raw_url}}'}</code> <code>{'{{configs}}'}</code> <code>{'{{vless_links}}'}</code> <code>{'{{config_count}}'}</code> <code>{'{{used_gb}}'}</code> <code>{'{{quota_gb}}'}</code> <code>{'{{remaining_gb}}'}</code> <code>{'{{remaining_percent}}'}</code> <code>{'{{days_remaining}}'}</code> <code>{'{{connection_instructions}}'}</code>.</p>
+      <p className="helper-text">Use <code>{'{{vless_links}}'}</code> and <code>{'{{connection_instructions}}'}</code> where you want the clickable VLESS links and connection guide to appear. Values are generated server-side for each subscription.</p>
       <textarea value={html} onChange={event => setHtml(event.target.value)} style={{ width: '100%', minHeight: 520, fontFamily: 'monospace' }} spellCheck={false} />
       <div className="form-actions"><button className="button primary" disabled={busy || !html.trim()} onClick={() => void saveHtml()}>{busy && <Spinner/>} Save subscription page</button></div>
     </Panel>
