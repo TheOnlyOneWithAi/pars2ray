@@ -12,7 +12,7 @@ agent/        node-only agent; no UI or database
 frontend/     React + TypeScript enterprise console
 migrations/   Alembic migration environment and initial schema
 installer/    SSH bootstrap for nodes
- deploy/       Docker Compose, installer, CLI and backup scripts
+deploy/       Docker Compose, installer, CLI and backup scripts
 tests/        deterministic backend tests
 ```
 
