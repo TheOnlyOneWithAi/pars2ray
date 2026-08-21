@@ -104,6 +104,11 @@ class RouteCreate(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class ConfigBuildRequest(BaseModel):
+    clients: list[dict[str, str]] = Field(default_factory=list, max_length=10000)
+    apply: bool = False
+
+
 class RouteOut(ORMModel):
     id: int
     name: str
@@ -236,7 +241,13 @@ class OptimizerRequest(BaseModel):
 
 
 class SystemSettingUpdate(BaseModel):
-    value: str = Field(max_length=4000)
+    value: str = Field(max_length=100000)
+
+
+class PanelDomainUpdate(BaseModel):
+    domain: str = Field(min_length=4, max_length=253)
+    tls: bool = True
+    email: str | None = Field(default=None, max_length=254)
 
 
 class ApiKeyCreate(BaseModel):
