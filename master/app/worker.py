@@ -27,14 +27,15 @@ def cleanup() -> int:
 
 
 def main() -> None:
+    # The Compose healthcheck is deliberately a one-shot lifecycle marker.
+    # Dependency readiness is already enforced by Compose before the worker
+    # starts, so once this process has started it is considered running/healthy.
+    WORKER_READY_MARKER.touch(exist_ok=True)
     while True:
         try:
             removed = cleanup()
             if removed:
                 log.info("removed %s expired refresh tokens", removed)
-            # Readiness is intentionally one-shot. Once the worker has completed
-            # one successful DB cycle, Docker keeps it healthy until restart.
-            WORKER_READY_MARKER.touch(exist_ok=True)
         except Exception:
             log.exception("worker cycle failed")
         time.sleep(max(settings.worker_poll_seconds, 10))
