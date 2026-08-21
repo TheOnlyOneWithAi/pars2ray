@@ -22,9 +22,7 @@ class SSHRequest(BaseModel):
     host: str = Field(min_length=1, max_length=255)
     port: int = Field(default=22, ge=1, le=65535)
     username: str = Field(min_length=1, max_length=128)
-    password: str | None = Field(default=None, max_length=4096)
-    private_key: str | None = Field(default=None, max_length=20000)
-    passphrase: str | None = Field(default=None, max_length=4096)
+    password: str = Field(min_length=1, max_length=4096)
 
     @field_validator("host", "username")
     @classmethod
@@ -35,9 +33,7 @@ class SSHRequest(BaseModel):
         return value
 
     def to_config(self) -> SSHConfig:
-        if not self.password and not self.private_key:
-            raise ValueError("ssh_password_or_private_key_required")
-        return SSHConfig(host=self.host, port=self.port, username=self.username, password=self.password, private_key=self.private_key, passphrase=self.passphrase)
+        return SSHConfig(host=self.host, port=self.port, username=self.username, password=self.password)
 
 
 class NodeProvisionRequest(BaseModel):
@@ -65,13 +61,10 @@ def test_ssh_connection(payload: SSHRequest) -> dict:
 def provision_node(payload: NodeProvisionRequest, request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
     if db.scalar(select(Node).where(Node.node_key == payload.node_key)):
         raise HTTPException(status_code=409, detail="node_key_exists")
-    try:
-        ssh_config = payload.ssh.to_config()
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    ssh_config = payload.ssh.to_config()
 
-    # Endpoint is no longer user input. The agent is installed over SSH and
-    # listens on its fixed local port, so the panel derives its URL from SSH host.
+    # Endpoint is never user input. The agent is installed over SSH and listens
+    # on its fixed local port, so the panel derives the URL from the SSH host.
     endpoint = f"http://{payload.ssh.host}:9100"
     agent_token = secrets.token_urlsafe(48)
     node = Node(
@@ -80,7 +73,7 @@ def provision_node(payload: NodeProvisionRequest, request: Request, db: Session 
         endpoint=endpoint,
         agent_token_hash=token_hash(agent_token),
         agent_token_enc=encrypt_secret(agent_token),
-        ssh_config_enc=encrypt_secret(json.dumps(payload.ssh.model_dump(exclude_none=True), separators=(",", ":"))),
+        ssh_config_enc=encrypt_secret(json.dumps(payload.ssh.model_dump(), separators=(",", ":"))),
         status="PROVISIONING",
         agent_version="unknown",
     )
