@@ -2,7 +2,7 @@
 
 [English](README.md) | [فارسی](README.fa.md) | [Русский](README.ru.md)
 
-Pars2Ray is a production-oriented network orchestration control plane with one FastAPI master, PostgreSQL persistence, Redis service, background worker, React/TypeScript console, and authenticated lightweight node agents.
+Pars2Ray is a production-oriented network orchestration control plane with one FastAPI master, a background worker, a React/TypeScript console, and authenticated lightweight node agents.
 
 ## Repository
 
@@ -10,29 +10,32 @@ Pars2Ray is a production-oriented network orchestration control plane with one F
 master/       FastAPI control plane, domain services, persistence, worker
 agent/        node-only agent; no UI or database
 frontend/     React + TypeScript enterprise console
-migrations/   Alembic migration environment and initial schema
+migrations/   Alembic migration environment and schema
 installer/    SSH bootstrap for nodes
-deploy/       Docker Compose, installer, CLI and backup scripts
+deploy/       Native Installer v2, systemd services and legacy Docker files
 tests/        deterministic backend tests
 ```
 
-## One-command installation
+## One-command Native installation
 
-Pars2Ray is designed to install like a panel: **one command, no manual `.env` editing**.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/TheOnlyOneWithAi/pars2ray/main/install.sh | sudo bash
-```
-
-The installer automatically installs Docker/Compose when needed, downloads the current release, generates runtime secrets, detects a safe Docker subnet, asks only for the panel account/port, starts PostgreSQL + Redis + Master + Worker, runs migrations, verifies the panel, and prints the final URL. Existing installations keep their `.env` and data.
-
-You can also use the installer directly:
+Pars2Ray now installs without Docker, PostgreSQL, Redis, or manual `.env` editing.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TheOnlyOneWithAi/pars2ray/main/deploy/install.sh | sudo bash
 ```
 
-After installation, management is intentionally simple:
+Native Installer v2 automatically installs Python/venv prerequisites, downloads the current release, generates runtime secrets, creates a local SQLite database, runs Alembic migrations, creates `pars2ray-master` and `pars2ray-worker` systemd services, verifies `/health`, and prints the panel URL.
+
+On first install it asks only for:
+
+1. Panel username
+2. Panel email
+3. Panel password
+4. Panel HTTP port
+
+The installer writes the runtime configuration with mode `600`. You do not need to edit `.env` manually.
+
+### Management
 
 ```bash
 pars2ray status
@@ -41,29 +44,23 @@ pars2ray logs
 pars2ray update
 ```
 
-Useful commands are `start`, `stop`, `restart`, `status`, `logs`, `master-logs`, `worker-logs`, `update`, `config`, `install`, and `uninstall`.
+### Data
 
-### What the installer asks
+The default database is:
 
-On a first install, it asks interactively for:
+```text
+/opt/pars2ray/data/pars2ray.db
+```
 
-1. Panel username
-2. Panel email
-3. Panel password
-4. Panel HTTP port
+You can override `PARS2RAY_INSTALL_DIR` and `PARS2RAY_DATA_DIR` before installation. PostgreSQL remains supported for explicit/custom deployments by supplying a PostgreSQL `DATABASE_URL`; it is no longer required by the standard installer.
 
-PostgreSQL password, JWT secret, master secret and the Docker network are generated automatically. **Do not create or edit `.env` manually.**
+## Legacy Docker deployment
 
-The panel is then available at `http://SERVER_IP:PORT/`. The initial Super Admin is created from the values entered by the installer.
+The Docker Compose files remain in `deploy/docker-compose.yml` for compatibility with existing deployments, but they are no longer used by the standard installer.
 
 ## Manual development setup
 
-For development only, you can still create `.env` manually and start Compose:
-
-```bash
-cp .env.example .env
-docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
-```
+For development, install Python dependencies from `master/requirements.txt`, set `DATABASE_URL` to a local SQLite URL, and run Alembic before starting the application.
 
 ## Features
 
