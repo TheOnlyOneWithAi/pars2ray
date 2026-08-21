@@ -75,3 +75,5 @@ cd frontend && npm ci && npm run typecheck && npm run build
 ```
 
 Operational deployment steps are in [DEPLOYMENT.md](DEPLOYMENT.md). Architecture and threat controls are in [ARCHITECTURE.md](ARCHITECTURE.md) and [SECURITY.md](SECURITY.md).
+
+<!-- frontend-static-ci-verification -->
