@@ -11,6 +11,8 @@ export function NodeProvisionPage({ t, locale, notify, nodes, reload }: Props) {
   const [show, setShow] = useState(false)
   const [testing, setTesting] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [aiNode, setAiNode] = useState('')
+  const [aiBusy, setAiBusy] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
 
   async function testSSH() {
@@ -28,19 +30,28 @@ export function NodeProvisionPage({ t, locale, notify, nodes, reload }: Props) {
     event.preventDefault(); setCreating(true)
     const form = new FormData(event.currentTarget)
     try {
-      await api.provisionNode({
-        node_key: String(form.get('node_key')).trim().toUpperCase(),
-        country: String(form.get('country')).trim().toUpperCase(),
-        endpoint: String(form.get('endpoint')).trim(),
-        ssh: { host: String(form.get('host')).trim(), port: Number(form.get('port') || 22), username: String(form.get('username')).trim(), password: String(form.get('password') || ''), private_key: String(form.get('private_key') || '') },
-      })
+      await api.provisionNode({ node_key: String(form.get('node_key')).trim().toUpperCase(), country: String(form.get('country')).trim().toUpperCase(), endpoint: String(form.get('endpoint')).trim(), ssh: { host: String(form.get('host')).trim(), port: Number(form.get('port') || 22), username: String(form.get('username')).trim(), password: String(form.get('password') || ''), private_key: String(form.get('private_key') || '') } })
       notify(t('completed')); setShow(false); await reload()
     } catch (error) { notify(error instanceof Error ? error.message : t('failed'), 'error') } finally { setCreating(false) }
+  }
+
+  async function optimizeExistingInbound() {
+    if (!aiNode) return
+    setAiBusy(true)
+    try {
+      const result = await api.configureNodeWithAI(aiNode, true)
+      notify(`${aiNode}: ${result.updates.length} inbound(s) updated`)
+      await reload()
+    } catch (error) { notify(error instanceof Error ? error.message : t('failed'), 'error') } finally { setAiBusy(false) }
   }
 
   return <>
     <Panel title={t('managedNodes')} eyebrow="INFRASTRUCTURE" className="page-panel" action={<button className="button primary" onClick={() => setShow(true)}><Icon name="plus" size={15}/>{t('create')}</button>}>
       <div>{t('managedNodes')} — SSH provisioning and automatic agent installation</div>
+    </Panel>
+    <Panel title="AI Inbound Optimizer" eyebrow="SAFE CONFIGURATION" className="page-panel">
+      <div className="toolbar"><select value={aiNode} onChange={event => setAiNode(event.target.value)}><option value="">Select node</option>{nodes.map(node => <option key={node.node_key} value={node.node_key}>{node.node_key} · {node.core}</option>)}</select><button className="button primary" disabled={!aiNode || aiBusy} onClick={() => void optimizeExistingInbound()}>{aiBusy ? 'Optimizing…' : 'AI Optimize Existing Inbounds'}</button></div>
+      <small>AI may update protocol/transport on existing inbound tags only. It cannot create, delete, retag, or change credentials.</small>
     </Panel>
     <NodesPage t={t} locale={locale} notify={notify} nodes={nodes} reload={reload}/>
     {show && <Modal title={t('create')} onClose={() => setShow(false)} wide><form ref={formRef} className="modal-body form-grid" onSubmit={create}>
