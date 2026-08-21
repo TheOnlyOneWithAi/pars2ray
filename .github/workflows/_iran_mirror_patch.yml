@@ -1,0 +1,94 @@
+name: apply-iran-mirror-patch
+
+on:
+  push:
+    paths:
+      - '.github/workflows/_iran_mirror_patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch installer mirrors
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('deploy/install.sh')
+          s = p.read_text()
+          new = r'''configure_reliable_apt_sources(){
+  local codename="${VERSION_CODENAME:-}"
+  [[ -n "$codename" ]] || codename="$(lsb_release -cs 2>/dev/null || true)"
+  [[ -n "$codename" ]] || die "Could not determine distribution codename."
+
+  case "${ID:-}" in
+    ubuntu)
+      # Iranian mirrors first; official Ubuntu mirrors remain as fallbacks.
+      # Package metadata is still verified by APT's repository signatures.
+      local mirrors=(
+        "https://mirror.sharif.edu/ubuntu"
+        "http://mirror.arvancloud.ir/ubuntu"
+        "http://ubuntu.ut.ac.ir/ubuntu"
+        "https://archive.ubuntu.com/ubuntu"
+      )
+      local mirror=""
+      for candidate in "${mirrors[@]}"; do
+        if command_exists curl && curl -fsSI --connect-timeout 3 --max-time 6 "${candidate}/dists/${codename}/Release" >/dev/null 2>&1; then
+          mirror="$candidate"
+          break
+        fi
+      done
+      [[ -n "$mirror" ]] || die "No reachable Ubuntu APT mirror found. Tried Iranian mirrors and archive.ubuntu.com."
+      cat > "$APT_SOURCES_FILE" <<EOF
+# Selected by Pars2Ray: fastest reachable mirror for Iranian servers.
+deb ${mirror} ${codename} main restricted universe multiverse
+deb ${mirror} ${codename}-updates main restricted universe multiverse
+deb ${mirror} ${codename}-security main restricted universe multiverse
+EOF
+      ;;
+    debian)
+      # Debian currently lists an Iranian mirror at archive.debian.petiak.ir.
+      # Keep deb.debian.org as a fallback if the Iranian mirror is unavailable.
+      local mirrors=(
+        "https://archive.debian.petiak.ir/debian"
+        "http://archive.debian.petiak.ir/debian"
+        "https://deb.debian.org/debian"
+      )
+      local mirror=""
+      for candidate in "${mirrors[@]}"; do
+        if command_exists curl && curl -fsSI --connect-timeout 3 --max-time 6 "${candidate}/dists/${codename}/Release" >/dev/null 2>&1; then
+          mirror="$candidate"
+          break
+        fi
+      done
+      [[ -n "$mirror" ]] || die "No reachable Debian APT mirror found. Tried Iranian mirror and deb.debian.org."
+      cat > "$APT_SOURCES_FILE" <<EOF
+# Selected by Pars2Ray: fastest reachable mirror for Iranian servers.
+deb ${mirror} ${codename} main
+deb ${mirror} ${codename}-updates main
+deb ${mirror} ${codename}-security main
+EOF
+      ;;
+  esac
+  chmod 0644 "$APT_SOURCES_FILE"
+  log "Using reachable ${ID} APT mirror: ${mirror} (codename: ${codename})"
+}
+'''
+          pattern = r'configure_reliable_apt_sources\(\)\{.*?\n\}\n\napt_with_reliable_sources\(\)\{'
+          replacement = new + '\napt_with_reliable_sources(){'
+          out, n = re.subn(pattern, replacement, s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit('installer mirror function pattern not found')
+          p.write_text(out)
+          PY
+      - name: Commit installer change
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add deploy/install.sh
+          git commit -m 'fix(installer): prefer reachable Iranian APT mirrors' || exit 0
+          git push
