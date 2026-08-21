@@ -49,7 +49,9 @@ services:
       db: {condition: service_healthy}
       redis: {condition: service_healthy}
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
+      # One-shot readiness latch: once /health succeeds, Docker stops probing
+      # the application and keeps the service healthy until the container restarts.
+      test: ["CMD-SHELL", "if [ -f /tmp/.pars2ray-master-ready ]; then exit 0; fi; python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()\" && touch /tmp/.pars2ray-master-ready"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -75,6 +77,14 @@ services:
       db: {condition: service_healthy}
       redis: {condition: service_healthy}
       master: {condition: service_healthy}
+    healthcheck:
+      # The worker marks readiness after its first successful DB cycle. After
+      # that, Docker only checks the latch file instead of polling the worker.
+      test: ["CMD-SHELL", "test -f /tmp/.pars2ray-worker-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
     security_opt:
       - no-new-privileges:true
     cap_drop: ["ALL"]
