@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Optional IranGit mirror. The mirror is used only for public GitHub source
-# retrieval; official GitHub remains the fallback. Set PARS2RAY_MIRROR_URL to
-# another trusted mirror if desired.
-PARS2RAY_MIRROR_URL="${PARS2RAY_MIRROR_URL:-https://scorpian.ir}"
 PARS2RAY_REPOSITORY="${PARS2RAY_REPOSITORY:-https://github.com/TheOnlyOneWithAi/pars2ray.git}"
 PARS2RAY_REF="${PARS2RAY_REF:-main}"
 PARS2RAY_INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
 PARS2RAY_ENV_FILE="${PARS2RAY_INSTALL_DIR}/.env"
+PARS2RAY_APT_MIRROR="${PARS2RAY_APT_MIRROR:-https://mirror.iranserver.com/ubuntu/}"
 PARS2RAY_FIRST_INSTALL=0
 
 log() { printf '[pars2ray] %s\n' "$*"; }
@@ -21,67 +18,58 @@ case "${ID:-}" in ubuntu|debian) ;; *) die "Unsupported distribution: ${ID:-unkn
 
 install_prerequisites() {
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
+  if [[ "${ID}" == "ubuntu" && -n "${PARS2RAY_APT_MIRROR}" ]]; then
+    if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+      cp -a /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.pars2ray.bak
+      sed -i -E "s#https?://[^[:space:]]+/ubuntu/?#${PARS2RAY_APT_MIRROR%/}#g" /etc/apt/sources.list.d/ubuntu.sources || true
+    fi
+    if [[ -f /etc/apt/sources.list ]]; then
+      cp -a /etc/apt/sources.list /etc/apt/sources.list.pars2ray.bak
+      sed -i -E "s#https?://(archive|[a-z]+\.archive)\.ubuntu\.com/ubuntu/?#${PARS2RAY_APT_MIRROR%/}#g" /etc/apt/sources.list || true
+    fi
+  fi
+  apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=8 -o Acquire::https::Timeout=8 update -qq
   apt-get install -y -qq ca-certificates curl git openssl
 }
 
 ensure_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     log "Installing Docker Engine"
-    if ! apt-get install -y -qq docker.io; then curl -fsSL --connect-timeout 5 --max-time 30 https://get.docker.com | sh; fi
+    if ! apt-get install -y -qq docker.io; then curl -fsSL --connect-timeout 5 --max-time 20 https://get.docker.com | sh; fi
   fi
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files docker.service >/dev/null 2>&1; then systemctl enable --now docker; fi
-  if ! docker compose version >/dev/null 2>&1; then
-    apt-get install -y -qq docker-compose-plugin 2>/dev/null || apt-get install -y -qq docker-compose-v2 2>/dev/null || true
-  fi
+  if ! docker compose version >/dev/null 2>&1; then apt-get install -y -qq docker-compose-plugin 2>/dev/null || apt-get install -y -qq docker-compose-v2 2>/dev/null || true; fi
   if docker compose version >/dev/null 2>&1; then PARS2RAY_COMPOSE=(docker compose)
   elif command -v docker-compose >/dev/null 2>&1; then PARS2RAY_COMPOSE=(docker-compose)
   else die "Docker Compose v2 is required but was not found"; fi
 }
 
-mirror_repository() {
-  local repo="$1"
-  # IranGit currently advertises GitHub repository browsing/downloads, but does
-  # not document a git clone endpoint. Do not guess one: only use the mirror
-  # when an explicit repository endpoint is configured.
-  if [[ -n "${PARS2RAY_MIRROR_REPOSITORY:-}" ]]; then
-    printf '%s' "$PARS2RAY_MIRROR_REPOSITORY"
-  else
-    printf '%s' "$repo"
-  fi
-}
-
 checkout_project() {
-  local repository
-  repository="$(mirror_repository "$PARS2RAY_REPOSITORY")"
   if [[ -e "$PARS2RAY_INSTALL_DIR" && ! -d "$PARS2RAY_INSTALL_DIR/.git" ]]; then die "$PARS2RAY_INSTALL_DIR exists and is not a Pars2Ray checkout"; fi
   if [[ -d "$PARS2RAY_INSTALL_DIR/.git" ]]; then
     git -C "$PARS2RAY_INSTALL_DIR" diff --quiet || die "Existing checkout has uncommitted changes"
     git -C "$PARS2RAY_INSTALL_DIR" diff --cached --quiet || die "Existing checkout has staged changes"
-    if ! git -C "$PARS2RAY_INSTALL_DIR" fetch --depth 1 origin "$PARS2RAY_REF"; then
-      die "Unable to update repository. Check network access or set PARS2RAY_REPOSITORY to a reachable mirror."
-    fi
+    git -C "$PARS2RAY_INSTALL_DIR" fetch --depth 1 origin "$PARS2RAY_REF"
     git -C "$PARS2RAY_INSTALL_DIR" checkout --force "$PARS2RAY_REF"
     git -C "$PARS2RAY_INSTALL_DIR" reset --hard "origin/$PARS2RAY_REF"
   else
     PARS2RAY_FIRST_INSTALL=1
     install -d -m 0755 "$(dirname "$PARS2RAY_INSTALL_DIR")"
-    if ! git clone --depth 1 --branch "$PARS2RAY_REF" "$repository" "$PARS2RAY_INSTALL_DIR"; then
-      if [[ "$repository" != "$PARS2RAY_REPOSITORY" ]]; then
-        log "Mirror checkout failed; falling back to official GitHub repository"
-        rm -rf "$PARS2RAY_INSTALL_DIR"
-        git clone --depth 1 --branch "$PARS2RAY_REF" "$PARS2RAY_REPOSITORY" "$PARS2RAY_INSTALL_DIR"
-      else
-        die "Unable to clone Pars2Ray repository"
-      fi
-    fi
+    git clone --depth 1 --branch "$PARS2RAY_REF" "$PARS2RAY_REPOSITORY" "$PARS2RAY_INSTALL_DIR"
   fi
 }
 
 read_env_value() { local key="$1"; [[ -f "$PARS2RAY_ENV_FILE" ]] || return 0; awk -F= -v wanted="$key" '$1 == wanted {sub(/^[^=]*=/, ""); print; exit}' "$PARS2RAY_ENV_FILE"; }
-set_env_value() { local key="$1" value="$2"; case "$value" in *$'\n'*|*$'\r'*) die "$key cannot contain a newline";; esac; if grep -q "^${key}=" "$PARS2RAY_ENV_FILE"; then sed -i "s|^${key}=.*|${key}=${value}|" "$PARS2RAY_ENV_FILE"; else printf '\n%s=%s\n' "$key" "$value" >> "$PARS2RAY_ENV_FILE"; fi; }
+
+set_env_value() {
+  local key="$1" value="$2" tmp="${PARS2RAY_ENV_FILE}.tmp.$$"
+  case "$value" in *$'\n'*|*$'\r'*) die "$key cannot contain a newline";; esac
+  awk -v wanted="$key" -v replacement="$value" 'BEGIN{found=0} $0 ~ "^" wanted "=" {if(!found){print wanted "=" replacement; found=1} next} {print} END{if(!found) print wanted "=" replacement}' "$PARS2RAY_ENV_FILE" > "$tmp"
+  chmod 600 "$tmp"; mv -f "$tmp" "$PARS2RAY_ENV_FILE"
+}
+
 random_hex() { openssl rand -hex 32; }
-prompt_value() { local prompt="$1" default="${2:-}" value; if [[ -n "$default" ]]; then read -r -p "$prompt [$default]: " value || true; printf '%s' "${value:-$default}"; else read -r -p "$prompt: " value || true; printf '%s' "$value"; fi; }
+prompt_value() { local prompt="$1" default="${2:-}" value; read -r -p "$prompt${default:+ [$default]}: " value || true; printf '%s' "${value:-$default}"; }
 prompt_secret() { local prompt="$1" value confirmation; while true; do read -r -s -p "$prompt: " value || true; printf '\n'; [[ -n "$value" ]] || { log "Value cannot be empty."; continue; }; read -r -s -p "Confirm: " confirmation || true; printf '\n'; [[ "$value" == "$confirmation" ]] || { log "Values do not match. Try again."; continue; }; printf '%s' "$value"; return 0; done; }
 
 configure_environment() {
@@ -116,16 +104,16 @@ start_and_verify() {
   "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" up -d --build
   health_url="http://127.0.0.1:${port}/health"
   log "Waiting for master health: $health_url"
-  for attempt in $(seq 1 90); do
-    if curl -fsS --connect-timeout 1 --max-time 3 "$health_url" >/dev/null 2>&1; then log "Master health check passed"; return 0; fi
-    if (( attempt == 1 || attempt % 10 == 0 )); then log "Health not ready yet (attempt $attempt/90)"; "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" ps --format 'table {{.Name}}\t{{.State}}\t{{.Health}}\t{{.Ports}}' || true; fi
+  for attempt in $(seq 1 60); do
+    if curl -fsS --connect-timeout 1 --max-time 2 "$health_url" >/dev/null 2>&1; then log "Master health check passed"; return 0; fi
+    if (( attempt == 1 || attempt % 10 == 0 )); then log "Health not ready yet (attempt $attempt/60)"; "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" ps --format 'table {{.Name}}\t{{.State}}\t{{.Health}}\t{{.Ports}}' || true; fi
     sleep 2
   done
   printf '\n[pars2ray] Master diagnostics:\n' >&2
   "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" ps >&2 || true
-  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" logs --tail=250 master >&2 || true
-  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" logs --tail=100 db >&2 || true
-  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" logs --tail=100 redis >&2 || true
+  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" logs --tail=200 master >&2 || true
+  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" logs --tail=80 db >&2 || true
+  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" logs --tail=80 redis >&2 || true
   die "Master did not become healthy. Check the diagnostics above; no manual .env editing is required."
 }
 
