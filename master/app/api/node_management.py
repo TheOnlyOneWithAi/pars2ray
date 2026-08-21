@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import current_user, request_ip, require_roles
 from app.core.security import encrypt_secret, token_hash
 from app.db.base import get_db
-from app.models.entities import AuditLog, Node, User
+from app.models.entities import Node, User
 from app.services.audit import record
 
 router = APIRouter(prefix="/api/v1/node-management", tags=["node-management"])
