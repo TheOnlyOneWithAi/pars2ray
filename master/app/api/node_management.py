@@ -22,22 +22,23 @@ class SSHRequest(BaseModel):
     host: str = Field(min_length=1, max_length=255)
     port: int = Field(default=22, ge=1, le=65535)
     username: str = Field(min_length=1, max_length=128)
+    host_key_fingerprint: str = Field(min_length=10, max_length=128)
     password: str | None = Field(default=None, max_length=4096)
     private_key: str | None = Field(default=None, max_length=20000)
     passphrase: str | None = Field(default=None, max_length=4096)
 
-    @field_validator("host", "username")
+    @field_validator("host", "username", "host_key_fingerprint")
     @classmethod
     def clean(cls, value: str) -> str:
         value = value.strip()
-        if not value or any(ch.isspace() for ch in value):
+        if not value or any(ch.isspace() for ch in value) and not value.startswith("SHA256:"):
             raise ValueError("invalid_ssh_value")
         return value
 
     def to_config(self) -> SSHConfig:
         if not self.password and not self.private_key:
             raise ValueError("ssh_password_or_private_key_required")
-        return SSHConfig(host=self.host, port=self.port, username=self.username, password=self.password, private_key=self.private_key, passphrase=self.passphrase)
+        return SSHConfig(host=self.host, port=self.port, username=self.username, host_key_fingerprint=self.host_key_fingerprint, password=self.password, private_key=self.private_key, passphrase=self.passphrase)
 
 
 class NodeProvisionRequest(BaseModel):
@@ -71,31 +72,15 @@ def test_ssh_connection(payload: SSHRequest) -> dict:
 
 
 @router.post("", dependencies=[Depends(require_roles("SUPER_ADMIN", "ADMIN"))])
-def provision_node(
-    payload: NodeProvisionRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-    user: User = Depends(current_user),
-) -> dict:
+def provision_node(payload: NodeProvisionRequest, request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
     if db.scalar(select(Node).where(Node.node_key == payload.node_key)):
         raise HTTPException(status_code=409, detail="node_key_exists")
-
     try:
         ssh_config = payload.ssh.to_config()
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
     agent_token = secrets.token_urlsafe(48)
-    node = Node(
-        node_key=payload.node_key,
-        country=payload.country,
-        endpoint=payload.endpoint,
-        agent_token_hash=token_hash(agent_token),
-        agent_token_enc=encrypt_secret(agent_token),
-        ssh_config_enc=encrypt_secret(json.dumps(payload.ssh.model_dump(exclude_none=True), separators=(",", ":"))),
-        status="PROVISIONING",
-        agent_version="unknown",
-    )
+    node = Node(node_key=payload.node_key, country=payload.country, endpoint=payload.endpoint, agent_token_hash=token_hash(agent_token), agent_token_enc=encrypt_secret(agent_token), ssh_config_enc=encrypt_secret(json.dumps(payload.ssh.model_dump(exclude_none=True), separators=(",", ":"))), status="PROVISIONING", agent_version="unknown")
     db.add(node)
     db.flush()
     try:
@@ -103,17 +88,7 @@ def provision_node(
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=502, detail=f"node_provision_failed:{exc}") from exc
-
     node.status = "REGISTERED"
     record(db, user, "node.provision", "node", str(node.id), request_ip(request))
     db.commit()
-
-    return {
-        "id": node.id,
-        "node_key": node.node_key,
-        "country": node.country,
-        "endpoint": node.endpoint,
-        "status": node.status,
-        "agent_version": node.agent_version,
-        "provisioned": True,
-    }
+    return {"id": node.id, "node_key": node.node_key, "country": node.country, "endpoint": node.endpoint, "status": node.status, "agent_version": node.agent_version, "provisioned": True}
