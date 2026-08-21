@@ -80,8 +80,11 @@ install_packages(){
   command_exists dpkg || die "dpkg is required on Ubuntu/Debian."
 
   wait_for_apt
-  if ! dpkg --audit >/dev/null 2>&1; then
+  local dpkg_audit
+  dpkg_audit="$(dpkg --audit 2>&1 || true)"
+  if [[ -n "$dpkg_audit" ]]; then
     warn "dpkg reports an incomplete package configuration; repairing it first."
+    printf '%s\n' "$dpkg_audit" >&2
     dpkg --configure -a || die "dpkg repair failed. Fix the package manager and rerun the installer."
   fi
 
@@ -263,17 +266,17 @@ ReadWritePaths=$DATA_DIR
 WantedBy=multi-user.target
 EOF
 
-  cat > /usr/local/bin/pars2ray <<'EOF'
+  cat > /usr/local/bin/pars2ray <<EOF
 #!/usr/bin/env bash
 set -e
-case "${1:-status}" in
+case "\${1:-status}" in
   status) systemctl --no-pager --full status pars2ray-master pars2ray-worker ;;
   start) systemctl start pars2ray-master pars2ray-worker ;;
   stop) systemctl stop pars2ray-worker pars2ray-master ;;
   restart) systemctl restart pars2ray-master pars2ray-worker ;;
   logs) journalctl -u pars2ray-master -u pars2ray-worker -n 200 --no-pager ;;
   credentials) cat /etc/pars2ray/credentials ;;
-  update) exec /opt/pars2ray/deploy/install.sh ;;
+  update) exec "$INSTALL_DIR/deploy/install.sh" ;;
   uninstall) systemctl disable --now pars2ray-worker pars2ray-master 2>/dev/null || true; rm -f /etc/systemd/system/pars2ray-master.service /etc/systemd/system/pars2ray-worker.service /usr/local/bin/pars2ray; systemctl daemon-reload ;;
   *) echo 'Usage: pars2ray {status|start|stop|restart|logs|credentials|update|uninstall}'; exit 2 ;;
 esac
