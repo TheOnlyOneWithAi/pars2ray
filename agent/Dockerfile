@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1.7
 FROM python:3.12-slim
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 RUN useradd --create-home --uid 10001 agent && mkdir -p /var/lib/pars2ray-agent && chown -R agent:agent /var/lib/pars2ray-agent
 WORKDIR /app
 COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip pip install --no-compile -r requirements.txt
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 COPY app ./app
 USER agent
 EXPOSE 9100
