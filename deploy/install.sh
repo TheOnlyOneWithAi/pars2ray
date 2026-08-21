@@ -15,6 +15,7 @@ CREDENTIALS_FILE="${ETC_DIR}/credentials"
 REPOSITORY="${PARS2RAY_REPOSITORY:-https://github.com/TheOnlyOneWithAi/pars2ray.git}"
 REF="${PARS2RAY_REF:-main}"
 PORT="${PARS2RAY_PANEL_PORT:-8000}"
+VENV_DIR="${INSTALL_DIR}/.venv"
 
 log(){ printf '\033[1;36m[pars2ray]\033[0m %s\n' "$*"; }
 ok(){ printf '\033[1;32m  ✓\033[0m %s\n' "$*"; }
@@ -49,11 +50,60 @@ set_env(){
   mv -f "$tmp" "$ENV_FILE"
 }
 
+apt_common_args=(
+  -o Acquire::Retries=3
+  -o Acquire::http::Timeout=20
+  -o Acquire::https::Timeout=20
+  -o DPkg::Lock::Timeout=120
+)
+
+wait_for_apt(){
+  local waited=0 lock
+  for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
+    while fuser "$lock" >/dev/null 2>&1; do
+      if (( waited >= 120 )); then
+        die "APT/DPKG lock is still held after 120s: $lock. Check unattended-upgrades/dpkg and run the installer again."
+      fi
+      if (( waited == 0 )); then log "Waiting for package manager lock: $lock"; fi
+      sleep 2
+      ((waited+=2))
+    done
+    waited=0
+  done
+}
+
 install_packages(){
   export DEBIAN_FRONTEND=noninteractive
   log "Installing required system packages..."
-  apt-get update -qq
-  apt-get install -y -qq ca-certificates curl git openssl python3 python3-venv python3-pip >/dev/null
+
+  command_exists apt-get || die "apt-get is required on Ubuntu/Debian."
+  command_exists dpkg || die "dpkg is required on Ubuntu/Debian."
+
+  wait_for_apt
+  local dpkg_audit
+  dpkg_audit="$(dpkg --audit 2>&1 || true)"
+  if [[ -n "$dpkg_audit" ]]; then
+    warn "dpkg reports an incomplete package configuration; repairing it first."
+    printf '%s\n' "$dpkg_audit" >&2
+    dpkg --configure -a || die "dpkg repair failed. Fix the package manager and rerun the installer."
+  fi
+
+  local apt_log="${TMPDIR:-/tmp}/pars2ray-apt.$$"
+  trap 'rm -f "$apt_log"' RETURN
+
+  if ! apt-get "${apt_common_args[@]}" update -y >"$apt_log" 2>&1; then
+    warn "apt-get update failed; diagnostic output follows:"
+    sed -n '1,120p' "$apt_log" >&2 || true
+    die "Could not update APT package indexes. Check DNS/network/repository configuration and rerun the installer."
+  fi
+
+  if ! apt-get "${apt_common_args[@]}" install -y ca-certificates curl git openssl python3 python3-venv python3-pip >"$apt_log" 2>&1; then
+    warn "Package installation failed; diagnostic output follows:"
+    sed -n '1,160p' "$apt_log" >&2 || true
+    die "Required system packages could not be installed."
+  fi
+  rm -f "$apt_log"
+  trap - RETURN
   ok "System prerequisites ready"
 }
 
@@ -61,8 +111,8 @@ fetch_source(){
   if [[ -d "$INSTALL_DIR/.git" ]]; then
     log "Updating Pars2Ray source..."
     git -C "$INSTALL_DIR" fetch --depth 1 origin "$REF" >/dev/null 2>&1 || die "Could not fetch $REF from $REPOSITORY"
-    git -C "$INSTALL_DIR" reset --hard "origin/$REF" >/dev/null
-    git -C "$INSTALL_DIR" clean -fd >/dev/null
+    git -C "$INSTALL_DIR" reset --hard "origin/$REF" >/dev/null || die "Could not reset source to origin/$REF"
+    git -C "$INSTALL_DIR" clean -fd >/dev/null || die "Could not clean old source files"
   elif [[ -e "$INSTALL_DIR" ]]; then
     die "$INSTALL_DIR exists and is not a Git checkout. Move it away or set PARS2RAY_INSTALL_DIR."
   else
@@ -142,18 +192,22 @@ EOF
 }
 
 setup_python(){
-  local venv="$INSTALL_DIR/.venv"
-  if [[ ! -x "$venv/bin/python" ]]; then log "Creating isolated Python environment..."; python3 -m venv "$venv"; fi
-  "$venv/bin/python" -m pip install --upgrade pip wheel >/dev/null 2>&1
-  "$venv/bin/pip" install -q -r "$INSTALL_DIR/master/requirements.txt" || die "Python dependency installation failed"
+  VENV_DIR="${INSTALL_DIR}/.venv"
+  if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+    log "Creating isolated Python environment..."
+    python3 -m venv "$VENV_DIR" || die "Could not create Python virtual environment"
+  fi
+  "$VENV_DIR/bin/python" -m pip install --upgrade pip wheel >/dev/null 2>&1 || die "Could not upgrade pip/wheel"
+  "$VENV_DIR/bin/pip" install -q -r "$INSTALL_DIR/master/requirements.txt" || die "Python dependency installation failed"
   ok "Application dependencies ready"
-  printf '%s' "$venv"
 }
 
 migrate(){
   local venv="$1"
   log "Applying database migrations..."
-  export DATABASE_URL="$(read_env DATABASE_URL)"; export PYTHONPATH="$INSTALL_DIR/master"; cd "$INSTALL_DIR"
+  export DATABASE_URL="$(read_env DATABASE_URL)"
+  export PYTHONPATH="$INSTALL_DIR/master"
+  cd "$INSTALL_DIR"
   "$venv/bin/alembic" upgrade head >/dev/null || die "Database migration failed"
   ok "Database ready"
 }
@@ -212,17 +266,17 @@ ReadWritePaths=$DATA_DIR
 WantedBy=multi-user.target
 EOF
 
-  cat > /usr/local/bin/pars2ray <<'EOF'
+  cat > /usr/local/bin/pars2ray <<EOF
 #!/usr/bin/env bash
 set -e
-case "${1:-status}" in
+case "\${1:-status}" in
   status) systemctl --no-pager --full status pars2ray-master pars2ray-worker ;;
   start) systemctl start pars2ray-master pars2ray-worker ;;
   stop) systemctl stop pars2ray-worker pars2ray-master ;;
   restart) systemctl restart pars2ray-master pars2ray-worker ;;
   logs) journalctl -u pars2ray-master -u pars2ray-worker -n 200 --no-pager ;;
   credentials) cat /etc/pars2ray/credentials ;;
-  update) exec /opt/pars2ray/deploy/install.sh ;;
+  update) exec "$INSTALL_DIR/deploy/install.sh" ;;
   uninstall) systemctl disable --now pars2ray-worker pars2ray-master 2>/dev/null || true; rm -f /etc/systemd/system/pars2ray-master.service /etc/systemd/system/pars2ray-worker.service /usr/local/bin/pars2ray; systemctl daemon-reload ;;
   *) echo 'Usage: pars2ray {status|start|stop|restart|logs|credentials|update|uninstall}'; exit 2 ;;
 esac
@@ -233,10 +287,6 @@ EOF
   ok "systemd services installed"
 }
 
-# Enable BBR when the running kernel supports it. This is intentionally
-# best-effort and never prevents installation. BBR generally improves
-# throughput and latency under loss/congestion without hard-coding unsafe
-# buffer sizes or changing firewall behavior.
 tune_network(){
   [[ "${PARS2RAY_TUNE_NETWORK:-1}" == "1" ]] || { warn "Network tuning disabled by PARS2RAY_TUNE_NETWORK=0"; return; }
   command_exists sysctl || return
@@ -261,10 +311,13 @@ EOF
 health_check(){
   local attempt url="http://127.0.0.1:${PORT}/health"
   log "Starting Pars2Ray..."
-  systemctl restart pars2ray-master
+  systemctl restart pars2ray-master || { journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray master service"; }
   for attempt in $(seq 1 45); do
     if curl -fsS --connect-timeout 1 --max-time 2 "$url" >/dev/null 2>&1; then
-      ok "Panel is responding"; systemctl restart pars2ray-worker; ok "Worker started"; return 0
+      ok "Panel is responding"
+      systemctl restart pars2ray-worker || { journalctl -u pars2ray-worker -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray worker service"; }
+      ok "Worker started"
+      return 0
     fi
     sleep 1
   done
@@ -291,9 +344,9 @@ main(){
   fetch_source
   ensure_defaults
   first_run
-  local venv; venv="$(setup_python)"
-  migrate "$venv"
-  write_services "$venv"
+  setup_python
+  migrate "$VENV_DIR"
+  write_services "$VENV_DIR"
   tune_network
   health_check
   print_result
