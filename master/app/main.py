@@ -14,7 +14,7 @@ from app.api.routes import router
 from app.api.ai_settings import router as ai_settings_router
 from app.api.node_management import router as node_management_router
 from app.core.config import settings
-from app.db.base import Base, SessionLocal, engine
+from app.db.base import SessionLocal
 from app.services.auth import ensure_seed
 from app.services.rate_limit import enforce
 from app.services.scheduler import start_scheduler, stop_scheduler
@@ -22,7 +22,10 @@ from app.services.scheduler import start_scheduler, stop_scheduler
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    # Database schema is owned by Alembic and is migrated by the master
+    # entrypoint before uvicorn starts. Do not call create_all() here: mixing
+    # SQLAlchemy metadata creation with Alembic can bypass migrations and can
+    # race with the worker during a fresh deployment.
     db = SessionLocal()
     try:
         ensure_seed(db)
@@ -33,12 +36,26 @@ async def lifespan(_: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(title=settings.app_name, version=settings.app_version, openapi_version="3.1.0", docs_url="/docs", redoc_url="/redoc", openapi_url="/openapi.json", lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    openapi_version="3.1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+    lifespan=lifespan,
+)
 
 if settings.trusted_host_list:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_host_list)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
-app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_credentials=False, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Master-Secret"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Master-Secret"],
+)
 
 
 @app.middleware("http")
@@ -47,7 +64,10 @@ async def security_and_rate_limit(request: Request, call_next):
         try:
             enforce(request)
         except Exception as exc:
-            return JSONResponse(status_code=getattr(exc, "status_code", 429), content={"detail": getattr(exc, "detail", "rate_limit_exceeded")})
+            return JSONResponse(
+                status_code=getattr(exc, "status_code", 429),
+                content={"detail": getattr(exc, "detail", "rate_limit_exceeded")},
+            )
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"

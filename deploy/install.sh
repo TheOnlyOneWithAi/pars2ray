@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Pars2Ray one-command production installer.
-# Fresh install is interactive for the panel account only; all infrastructure
-# secrets are generated automatically. Users never need to edit .env.
-
 PARS2RAY_REPOSITORY="${PARS2RAY_REPOSITORY:-https://github.com/TheOnlyOneWithAi/pars2ray.git}"
 PARS2RAY_REF="${PARS2RAY_REF:-main}"
 PARS2RAY_INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
@@ -131,7 +127,7 @@ configure_environment() {
   set_env_value MASTER_SECRET "$master_secret"
   set_env_value ENVIRONMENT production
   set_env_value DEBUG false
-  set_env_value DATABASE_URL 'postgresql+psycopg://pars2ray:${POSTGRES_PASSWORD}@db:5432/pars2ray'
+  set_env_value DATABASE_URL 'postgresql+psycopg://pars2ray:${POSTGRES_PASSWORD}@db:5432/pars2ray?connect_timeout=5'
   set_env_value REDIS_URL 'redis://redis:6379/0'
 }
 
@@ -172,15 +168,26 @@ start_and_verify() {
   "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" config >/dev/null
   "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" up -d --build
   health_url="http://127.0.0.1:${port}/health"
-  for attempt in $(seq 1 60); do
-    if curl -fsS --max-time 3 "$health_url" >/dev/null; then
+
+  log "Waiting for master health: $health_url"
+  for attempt in $(seq 1 90); do
+    if curl -fsS --connect-timeout 1 --max-time 3 "$health_url" >/dev/null 2>&1; then
       log "Master health check passed"
       return 0
     fi
+    if (( attempt == 1 || attempt % 10 == 0 )); then
+      log "Health not ready yet (attempt $attempt/90)"
+      "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" ps --format 'table {{.Name}}\t{{.State}}\t{{.Health}}\t{{.Ports}}' || true
+    fi
     sleep 2
   done
-  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" ps
-  die "Master did not become healthy. Inspect: cd $PARS2RAY_INSTALL_DIR && docker compose logs --tail=200 master"
+
+  printf '\n[pars2ray] Master diagnostics:\n' >&2
+  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" ps >&2 || true
+  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" logs --tail=250 master >&2 || true
+  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" logs --tail=100 db >&2 || true
+  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" logs --tail=100 redis >&2 || true
+  die "Master did not become healthy. Check the diagnostics above; no manual .env editing is required."
 }
 
 main() {
