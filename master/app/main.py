@@ -46,9 +46,9 @@ def _host_allowed(request: Request) -> bool:
 
 @app.middleware("http")
 async def security_and_rate_limit(request: Request, call_next):
-    if not _host_allowed(request) and request.url.path not in {"/health", "/api/v1/health"} and not request.url.path.startswith("/sub/"):
+    if not _host_allowed(request) and request.url.path not in {"/health", "/api/v1/health"}:
         return PlainTextResponse("Invalid host header", status_code=400)
-    if request.url.path not in {"/health", "/api/v1/health", "/docs", "/redoc", "/openapi.json"} and not request.url.path.startswith("/sub/"):
+    if request.url.path not in {"/health", "/api/v1/health", "/docs", "/redoc", "/openapi.json"}:
         try:
             enforce(request)
         except Exception as exc:
