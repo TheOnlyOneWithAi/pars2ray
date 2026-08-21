@@ -21,37 +21,43 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
           fetch-depth: 1
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci --no-audit --no-fund
+
       - name: Build frontend
         working-directory: frontend
         run: npm run build
-      - name: Verify static bundle
+
+      - name: Verify production bundle
         run: |
           test -s master/app/static/index.html
           test -d master/app/static/assets
-          find master/app/static/assets -type f | grep -q .
-      - name: Publish static bundle to repository
+          test "$(find master/app/static/assets -type f | wc -l)" -gt 0
+          grep -q '<div id="root"></div>' master/app/static/index.html
+
+      - name: Publish production bundle on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add master/app/static
+          git add -f master/app/static
           if git diff --cached --quiet; then
             echo "Static bundle is already up to date."
             exit 0
           fi
-          git commit -m "build(frontend): publish production static bundle"
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
-          else
-            git push origin "HEAD:${{ github.ref_name }}"
-          fi
+          git commit -m "build(frontend): publish production static bundle [skip ci]"
+          git push origin HEAD:main
+
+      - name: Verify pull request bundle
+        if: github.event_name == 'pull_request'
+        run: git status --short master/app/static
