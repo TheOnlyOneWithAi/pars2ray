@@ -1,125 +1,190 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PARS2RAY_REPOSITORY="${PARS2RAY_REPOSITORY:-https://github.com/TheOnlyOneWithAi/pars2ray.git}"
-PARS2RAY_REF="${PARS2RAY_REF:-main}"
-PARS2RAY_INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
-PARS2RAY_DATA_DIR="${PARS2RAY_DATA_DIR:-${PARS2RAY_INSTALL_DIR}/data}"
-PARS2RAY_ENV_FILE="${PARS2RAY_INSTALL_DIR}/.env"
-PARS2RAY_FIRST_INSTALL=0
+# Pars2Ray Native Installer v3
+# Design goals: one command, no Docker, safe re-runs, generated secrets,
+# systemd services, simple CLI, and useful failure diagnostics.
 
-log(){ printf '[pars2ray] %s\n' "$*"; }
-die(){ printf '[pars2ray] ERROR: %s\n' "$*" >&2; exit 1; }
-[[ "$(id -u)" == 0 ]] || die "Run as root"
-[[ -r /etc/os-release ]] || die "Ubuntu/Debian required"; . /etc/os-release
-case "${ID:-}" in ubuntu|debian) ;; *) die "Unsupported distribution: ${ID:-unknown}" ;; esac
+APP="pars2ray"
+INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
+DATA_DIR="${PARS2RAY_DATA_DIR:-${INSTALL_DIR}/data}"
+ETC_DIR="/etc/pars2ray"
+ENV_FILE="${ETC_DIR}/pars2ray.env"
+CREDENTIALS_FILE="${ETC_DIR}/credentials"
+REPOSITORY="${PARS2RAY_REPOSITORY:-https://github.com/TheOnlyOneWithAi/pars2ray.git}"
+REF="${PARS2RAY_REF:-main}"
+PORT="${PARS2RAY_PANEL_PORT:-8000}"
 
-install_prerequisites(){
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq ca-certificates curl git openssl python3 python3-venv python3-pip
-}
+log(){ printf '\033[1;36m[pars2ray]\033[0m %s\n' "$*"; }
+ok(){ printf '\033[1;32m  ✓\033[0m %s\n' "$*"; }
+warn(){ printf '\033[1;33m  !\033[0m %s\n' "$*" >&2; }
+die(){ printf '\033[1;31m[pars2ray] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
-checkout_project(){
-  if [[ -d "$PARS2RAY_INSTALL_DIR/.git" ]]; then
-    log "Updating existing Pars2Ray checkout"
-    git -C "$PARS2RAY_INSTALL_DIR" fetch --depth 1 origin "$PARS2RAY_REF"
-    git -C "$PARS2RAY_INSTALL_DIR" checkout --force "$PARS2RAY_REF"
-    git -C "$PARS2RAY_INSTALL_DIR" reset --hard "origin/$PARS2RAY_REF"
-  elif [[ -e "$PARS2RAY_INSTALL_DIR" ]]; then
-    die "$PARS2RAY_INSTALL_DIR exists but is not a Git checkout"
-  else
-    PARS2RAY_FIRST_INSTALL=1
-    install -d -m 0755 "$(dirname "$PARS2RAY_INSTALL_DIR")"
-    git clone --depth 1 --branch "$PARS2RAY_REF" "$PARS2RAY_REPOSITORY" "$PARS2RAY_INSTALL_DIR"
-  fi
-}
+[[ "$(id -u)" == 0 ]] || die "Run as root."
+[[ -r /etc/os-release ]] || die "Cannot identify the operating system."
+. /etc/os-release
+case "${ID:-}" in
+  ubuntu|debian) ;;
+  *) die "Supported distributions: Ubuntu and Debian. Detected: ${ID:-unknown}" ;;
+esac
 
-read_env_value(){
-  local key="$1"
-  [[ -f "$PARS2RAY_ENV_FILE" ]] || return 0
-  awk -F= -v wanted="$key" '$1==wanted{sub(/^[^=]*=/,"");print;exit}' "$PARS2RAY_ENV_FILE"
-}
-
-set_env_value(){
-  local key="$1" value="$2" tmp="${PARS2RAY_ENV_FILE}.tmp.$$"
-  case "$value" in *$'\n'*|*$'\r'*) die "$key cannot contain a newline";; esac
-  awk -v w="$key" -v r="$value" 'BEGIN{f=0}$0~"^"w"="{if(!f){print w"="r;f=1};next}{print}END{if(!f)print w"="r}' "$PARS2RAY_ENV_FILE" > "$tmp"
-  chmod 600 "$tmp"; mv -f "$tmp" "$PARS2RAY_ENV_FILE"
-}
+command_exists(){ command -v "$1" >/dev/null 2>&1; }
 
 random_hex(){ openssl rand -hex 32; }
-prompt_value(){ local p="$1" d="${2:-}" v; read -r -p "$p${d:+ [$d]}: " v || true; printf '%s' "${v:-$d}"; }
-prompt_secret(){
-  local p="$1" v c
-  while true; do
-    read -r -s -p "$p: " v || true; printf '\n'
-    [[ ${#v} -ge 12 ]] || { log "Password must contain at least 12 characters."; continue; }
-    read -r -s -p "Confirm: " c || true; printf '\n'
-    [[ "$v" == "$c" ]] || { log "Values do not match."; continue; }
-    printf '%s' "$v"; return
+
+read_env(){
+  local key="$1"
+  [[ -f "$ENV_FILE" ]] || return 0
+  awk -F= -v k="$key" '$1==k{sub(/^[^=]*=/,""); print; exit}' "$ENV_FILE"
+}
+
+set_env(){
+  local key="$1" value="$2" tmp
+  case "$value" in *$'\n'*|*$'\r'*) die "$key contains a newline";; esac
+  install -d -m 0750 "$ETC_DIR"
+  touch "$ENV_FILE"
+  tmp="${ENV_FILE}.tmp.$$"
+  awk -v k="$key" -v v="$value" 'BEGIN{done=0} $0 ~ "^" k "=" {if(!done){print k "=" v;done=1};next} {print} END{if(!done)print k "=" v}' "$ENV_FILE" > "$tmp"
+  chmod 0600 "$tmp"
+  mv -f "$tmp" "$ENV_FILE"
+}
+
+install_packages(){
+  export DEBIAN_FRONTEND=noninteractive
+  log "Installing required system packages..."
+  apt-get update -qq
+  apt-get install -y -qq ca-certificates curl git openssl python3 python3-venv python3-pip >/dev/null
+  ok "System prerequisites ready"
+}
+
+fetch_source(){
+  if [[ -d "$INSTALL_DIR/.git" ]]; then
+    log "Updating Pars2Ray source..."
+    git -C "$INSTALL_DIR" fetch --depth 1 origin "$REF" >/dev/null 2>&1 || die "Could not fetch $REF from $REPOSITORY"
+    git -C "$INSTALL_DIR" reset --hard "origin/$REF" >/dev/null
+    git -C "$INSTALL_DIR" clean -fd >/dev/null
+  elif [[ -e "$INSTALL_DIR" ]]; then
+    die "$INSTALL_DIR exists and is not a Git checkout. Move it away or set PARS2RAY_INSTALL_DIR."
+  else
+    log "Downloading Pars2Ray..."
+    install -d -m 0755 "$(dirname "$INSTALL_DIR")"
+    git clone --depth 1 --branch "$REF" "$REPOSITORY" "$INSTALL_DIR" >/dev/null 2>&1 || die "Could not clone $REPOSITORY"
+  fi
+  ok "Source ready"
+}
+
+ensure_defaults(){
+  install -d -m 0750 "$ETC_DIR" "$DATA_DIR"
+  touch "$ENV_FILE"
+  chmod 0600 "$ENV_FILE"
+
+  local jwt master db host
+  jwt="$(read_env JWT_SECRET)"; [[ -n "$jwt" ]] || jwt="$(random_hex)"
+  master="$(read_env MASTER_SECRET)"; [[ -n "$master" ]] || master="$(random_hex)"
+  db="$(read_env DATABASE_URL)"; [[ "$db" == sqlite:* ]] || db="sqlite:////${DATA_DIR#/}/pars2ray.db"
+  host="$(hostname -I 2>/dev/null | awk '{print $1}')"; host="${host:-127.0.0.1}"
+
+  set_env ENVIRONMENT production
+  set_env DEBUG false
+  set_env DATABASE_URL "$db"
+  set_env REDIS_URL ""
+  set_env JWT_SECRET "$jwt"
+  set_env MASTER_SECRET "$master"
+  set_env PARS2RAY_DATA_DIR "$DATA_DIR"
+  set_env PANEL_HTTP_PORT "$PORT"
+  set_env TRUSTED_HOSTS "localhost,127.0.0.1,$host"
+}
+
+prompt(){
+  local label="$1" default="${2:-}" value
+  if [[ -n "${PARS2RAY_NONINTERACTIVE:-}" || ! -t 0 ]]; then
+    printf '%s' "$default"
+    return
+  fi
+  read -r -p "$label${default:+ [$default]}: " value || true
+  printf '%s' "${value:-$default}"
+}
+
+prompt_password(){
+  local value confirm
+  if [[ -n "${PARS2RAY_ADMIN_PASSWORD:-}" ]]; then
+    printf '%s' "$PARS2RAY_ADMIN_PASSWORD"; return
+  fi
+  if [[ -n "${PARS2RAY_NONINTERACTIVE:-}" || ! -t 0 ]]; then
+    printf '%s' "$(random_hex)$(random_hex)"; return
+  fi
+  while :; do
+    read -r -s -p "Panel password (12+ chars): " value || true; printf '\n'
+    (( ${#value} >= 12 )) || { warn "Password must be at least 12 characters."; continue; }
+    read -r -s -p "Confirm password: " confirm || true; printf '\n'
+    [[ "$value" == "$confirm" ]] || { warn "Passwords do not match."; continue; }
+    printf '%s' "$value"; return
   done
 }
 
-configure_environment(){
-  if [[ ! -f "$PARS2RAY_ENV_FILE" ]]; then
-    cp "$PARS2RAY_INSTALL_DIR/.env.example" "$PARS2RAY_ENV_FILE"
-    PARS2RAY_FIRST_INSTALL=1
+first_run(){
+  local existing_user user email password host
+  existing_user="$(read_env ADMIN_USER)"
+  if [[ -n "$existing_user" ]]; then
+    ok "Existing installation detected; keeping panel credentials and settings"
+    return
   fi
-  chmod 600 "$PARS2RAY_ENV_FILE"
-  install -d -m 0750 "$PARS2RAY_DATA_DIR"
-  local j m db
-  j="$(read_env_value JWT_SECRET)"; [[ -n "$j" && "$j" != replace-with-* ]] || j="$(random_hex)"
-  m="$(read_env_value MASTER_SECRET)"; [[ -n "$m" && "$m" != replace-with-* ]] || m="$(random_hex)"
-  db="$(read_env_value DATABASE_URL)"; [[ "$db" == sqlite:* ]] || db="sqlite:////${PARS2RAY_DATA_DIR#/}/pars2ray.db"
-  set_env_value ENVIRONMENT production
-  set_env_value DEBUG false
-  set_env_value DATABASE_URL "$db"
-  set_env_value REDIS_URL ""
-  set_env_value JWT_SECRET "$j"
-  set_env_value MASTER_SECRET "$m"
-  set_env_value PARS2RAY_DATA_DIR "$PARS2RAY_DATA_DIR"
+
+  printf '\n\033[1;35m=== Pars2Ray setup ===\033[0m\n'
+  printf 'A small first-run wizard will create the panel account.\n\n'
+
+  user="${PARS2RAY_ADMIN_USER:-$(prompt 'Username' 'admin')}"
+  [[ "$user" =~ ^[A-Za-z0-9_.-]{3,64}$ ]] || die "Username must be 3-64 characters: letters, numbers, _, ., -"
+  email="${PARS2RAY_ADMIN_EMAIL:-$(prompt 'Email' 'admin@localhost')}"
+  [[ "$email" == *@*.* || "$email" == *@localhost ]] || die "Invalid email address"
+  password="$(prompt_password)"
+  host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}') }"
+  host="${host// /}"; host="${host:-localhost}"
+
+  set_env ADMIN_USER "$user"
+  set_env ADMIN_EMAIL "$email"
+  set_env ADMIN_PASSWORD "$password"
+  set_env PANEL_HTTP_PORT "$PORT"
+  set_env TRUSTED_HOSTS "localhost,127.0.0.1,$host"
+
+  cat > "$CREDENTIALS_FILE" <<EOF
+Pars2Ray installation
+=====================
+Panel: http://${host}:${PORT}
+Username: ${user}
+Password: ${password}
+
+Keep this file private. It is readable only by root.
+EOF
+  chmod 0600 "$CREDENTIALS_FILE"
+  ok "Panel account configured"
 }
 
-configure_first_run(){
-  local u e p port host
-  printf '\n=== Pars2Ray Native Installer v2 ===\nNo Docker, PostgreSQL or Redis setup is required.\n\n'
-  u="${PARS2RAY_ADMIN_USER:-$(read_env_value ADMIN_USER)}"; u="${u:-$(prompt_value 'Panel username' admin)}"
-  [[ "$u" =~ ^[A-Za-z0-9_.-]{3,64}$ ]] || die "Invalid panel username"
-  e="${PARS2RAY_ADMIN_EMAIL:-$(read_env_value ADMIN_EMAIL)}"; e="${e:-$(prompt_value 'Panel email' admin@example.com)}"
-  [[ "$e" == *@*.* ]] || die "Invalid panel email"
-  p="${PARS2RAY_ADMIN_PASSWORD:-}"
-  if [[ -z "$p" || "$p" == replace-with-* ]]; then p="$(prompt_secret 'Panel password (minimum 12 characters)')"; fi
-  port="${PARS2RAY_PANEL_PORT:-$(read_env_value PANEL_HTTP_PORT)}"; port="${port:-8000}"
-  [[ "$port" =~ ^[0-9]+$ ]] && ((port>=1 && port<=65535)) || die "Invalid panel port"
-  host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}') }"; host="${host// /}"; host="${host:-localhost}"
-  set_env_value ADMIN_USER "$u"
-  set_env_value ADMIN_EMAIL "$e"
-  set_env_value ADMIN_PASSWORD "$p"
-  set_env_value PANEL_HTTP_PORT "$port"
-  set_env_value TRUSTED_HOSTS "localhost,127.0.0.1,$host"
+setup_python(){
+  local venv="$INSTALL_DIR/.venv"
+  if [[ ! -x "$venv/bin/python" ]]; then
+    log "Creating isolated Python environment..."
+    python3 -m venv "$venv"
+  fi
+  "$venv/bin/python" -m pip install --upgrade pip wheel >/dev/null 2>&1
+  "$venv/bin/pip" install -q -r "$INSTALL_DIR/master/requirements.txt" || die "Python dependency installation failed"
+  ok "Application dependencies ready"
+  printf '%s' "$venv"
 }
 
-prepare_python(){
-  local venv="$PARS2RAY_INSTALL_DIR/.venv"
-  if [[ ! -x "$venv/bin/python" ]]; then python3 -m venv "$venv"; fi
-  "$venv/bin/python" -m pip install --upgrade pip wheel >/dev/null
-  "$venv/bin/pip" install -q -r "$PARS2RAY_INSTALL_DIR/master/requirements.txt"
-  printf '%s\n' "$venv"
-}
-
-migrate_database(){
-  local venv="$1" db
-  db="$(read_env_value DATABASE_URL)"
-  export DATABASE_URL="$db"
-  export PYTHONPATH="$PARS2RAY_INSTALL_DIR/master"
-  cd "$PARS2RAY_INSTALL_DIR"
-  "$venv/bin/alembic" upgrade head
+migrate(){
+  local venv="$1"
+  log "Applying database migrations..."
+  export DATABASE_URL="$(read_env DATABASE_URL)"
+  export PYTHONPATH="$INSTALL_DIR/master"
+  cd "$INSTALL_DIR"
+  "$venv/bin/alembic" upgrade head >/dev/null || die "Database migration failed"
+  ok "Database ready"
 }
 
 write_services(){
-  local venv="$1" port="$2" svc=/etc/systemd/system
-  cat > "$svc/pars2ray-master.service" <<EOF
+  local venv="$1"
+  cat > /etc/systemd/system/pars2ray-master.service <<EOF
 [Unit]
 Description=Pars2Ray Master Panel
 After=network-online.target
@@ -128,22 +193,23 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$PARS2RAY_INSTALL_DIR
-EnvironmentFile=$PARS2RAY_ENV_FILE
-Environment=PYTHONPATH=$PARS2RAY_INSTALL_DIR/master
-ExecStart=$venv/bin/uvicorn app.main:app --app-dir $PARS2RAY_INSTALL_DIR/master --host 0.0.0.0 --port $port --proxy-headers --timeout-keep-alive 15
+WorkingDirectory=$INSTALL_DIR
+EnvironmentFile=$ENV_FILE
+Environment=PYTHONPATH=$INSTALL_DIR/master
+ExecStart=$venv/bin/uvicorn app.main:app --app-dir $INSTALL_DIR/master --host 0.0.0.0 --port $PORT --proxy-headers --timeout-keep-alive 15
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=$PARS2RAY_DATA_DIR
+ReadWritePaths=$DATA_DIR
 
 [Install]
 WantedBy=multi-user.target
 EOF
-  cat > "$svc/pars2ray-worker.service" <<EOF
+
+  cat > /etc/systemd/system/pars2ray-worker.service <<EOF
 [Unit]
 Description=Pars2Ray Worker
 After=network-online.target pars2ray-master.service
@@ -152,9 +218,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$PARS2RAY_INSTALL_DIR
-EnvironmentFile=$PARS2RAY_ENV_FILE
-Environment=PYTHONPATH=$PARS2RAY_INSTALL_DIR/master
+WorkingDirectory=$INSTALL_DIR
+EnvironmentFile=$ENV_FILE
+Environment=PYTHONPATH=$INSTALL_DIR/master
 ExecStart=$venv/bin/python -m app.worker
 Restart=on-failure
 RestartSec=5
@@ -162,57 +228,75 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=$PARS2RAY_DATA_DIR
+ReadWritePaths=$DATA_DIR
 
 [Install]
 WantedBy=multi-user.target
 EOF
-  cat > /usr/local/bin/pars2ray <<EOF
+
+  cat > /usr/local/bin/pars2ray <<'EOF'
 #!/usr/bin/env bash
 set -e
-case "\${1:-status}" in
+case "${1:-status}" in
   status) systemctl --no-pager --full status pars2ray-master pars2ray-worker ;;
   start) systemctl start pars2ray-master pars2ray-worker ;;
   stop) systemctl stop pars2ray-worker pars2ray-master ;;
   restart) systemctl restart pars2ray-master pars2ray-worker ;;
   logs) journalctl -u pars2ray-master -u pars2ray-worker -n 200 --no-pager ;;
-  update) exec $PARS2RAY_INSTALL_DIR/deploy/install.sh ;;
-  *) echo 'Usage: pars2ray {status|start|stop|restart|logs|update}'; exit 2 ;;
+  credentials) cat /etc/pars2ray/credentials ;;
+  update) exec /opt/pars2ray/deploy/install.sh ;;
+  uninstall) systemctl disable --now pars2ray-worker pars2ray-master 2>/dev/null || true; rm -f /etc/systemd/system/pars2ray-master.service /etc/systemd/system/pars2ray-worker.service /usr/local/bin/pars2ray; systemctl daemon-reload ;;
+  *) echo 'Usage: pars2ray {status|start|stop|restart|logs|credentials|update|uninstall}'; exit 2 ;;
 esac
 EOF
   chmod 0755 /usr/local/bin/pars2ray
   systemctl daemon-reload
   systemctl enable pars2ray-master pars2ray-worker >/dev/null
+  ok "systemd services installed"
 }
 
-start_and_verify(){
-  local port="$1" url="http://127.0.0.1:${1}/health" attempt
+health_check(){
+  local attempt url="http://127.0.0.1:${PORT}/health"
+  log "Starting Pars2Ray..."
   systemctl restart pars2ray-master
   for attempt in $(seq 1 45); do
     if curl -fsS --connect-timeout 1 --max-time 2 "$url" >/dev/null 2>&1; then
-      log "Master health check passed"
+      ok "Panel is responding"
       systemctl restart pars2ray-worker
+      ok "Worker started"
       return 0
     fi
-    ((attempt==1 || attempt%10==0)) && log "Waiting for master ($attempt/45)"
     sleep 1
   done
-  journalctl -u pars2ray-master -n 120 --no-pager >&2 || true
-  die "Master did not become healthy"
+  journalctl -u pars2ray-master -n 100 --no-pager >&2 || true
+  die "Panel did not become ready. Run: pars2ray logs"
+}
+
+print_result(){
+  local host user
+  host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}') }"; host="${host// /}"; host="${host:-localhost}"
+  user="$(read_env ADMIN_USER)"
+  printf '\n\033[1;32m==============================================\033[0m\n'
+  printf '\033[1;32m Pars2Ray is installed and running\033[0m\n'
+  printf '\033[1;32m==============================================\033[0m\n'
+  printf ' Panel:       http://%s:%s\n' "$host" "$PORT"
+  printf ' Username:    %s\n' "$user"
+  printf ' Credentials: %s\n' "$CREDENTIALS_FILE"
+  printf ' CLI:         pars2ray status\n'
+  printf ' Logs:        pars2ray logs\n'
+  printf '\n'
 }
 
 main(){
-  install_prerequisites
-  checkout_project
-  configure_environment
-  configure_first_run
-  local venv; venv="$(prepare_python)"
-  migrate_database "$venv"
-  local port; port="$(read_env_value PANEL_HTTP_PORT)"; port="${port:-8000}"
-  write_services "$venv" "$port"
-  start_and_verify "$port"
-  local host u; host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}') }"; host="${host// /}"; host="${host:-localhost}"; u="$(read_env_value ADMIN_USER)"
-  printf '\n========================================\n Pars2Ray Native v2 is ready\n Panel: http://%s:%s\n User:  %s\n========================================\n\n' "$host" "$port" "$u"
-  printf 'Commands: pars2ray status | restart | logs | update\n'
+  install_packages
+  fetch_source
+  ensure_defaults
+  first_run
+  local venv; venv="$(setup_python)"
+  migrate "$venv"
+  write_services "$venv"
+  health_check
+  print_result
 }
+
 main "$@"
