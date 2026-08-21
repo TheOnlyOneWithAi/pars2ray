@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { api, hasAccess, isMockMode, setSession } from './api'
 import { direction, translate, type TranslationKey } from './i18n'
 import { AiSettingsPanel } from './AiSettingsPanel'
+import { NodeProvisionPage } from './NodeProvisionPage'
 import { BillingPage, DashboardPage, ExperimentsPage, NodesPage, OptimizerPage, ProtocolsPage, RoutesPage, SettingsPage, SubscriptionsPage, UsersPage } from './pages'
 import type { Dashboard, Locale, Node, Page, Route, TelemetryPoint, TrafficBreakdown } from './types'
 import { Icon, Spinner } from './ui'
@@ -22,7 +23,7 @@ export default function App() {
   if (loading || !dashboard) return <div className="boot"><div className="logo-mark"><span>P</span></div><Spinner/><p>{t('loading')}</p></div>
   const common = { t, locale, notify }; let content
   if (page === 'dashboard') content = <DashboardPage {...common} dashboard={dashboard} nodes={nodes} routes={routes} telemetry={telemetry} trafficBreakdown={trafficBreakdown} openPage={setPage}/>
-  else if (page === 'nodes') content = <NodesPage {...common} nodes={nodes} reload={loadAll}/>
+  else if (page === 'nodes') content = <NodeProvisionPage {...common} nodes={nodes} reload={loadAll}/>
   else if (page === 'routes') content = <RoutesPage {...common} routes={routes} nodes={nodes} reload={loadAll}/>
   else if (page === 'protocols') content = <ProtocolsPage {...common} routes={routes}/>
   else if (page === 'experiments') content = <ExperimentsPage {...common}/>
