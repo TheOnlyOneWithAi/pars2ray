@@ -22,7 +22,7 @@ export function NodeProvisionPage({ t, locale, notify, nodes, reload }: Props) {
         endpoint: String(form.get('endpoint')).trim(),
       })
       setResult(created)
-      notify(t('nodeCreated'))
+      notify(t('completed'))
       await reload()
     } catch (error) {
       notify(error instanceof Error ? error.message : t('failed'), 'error')
@@ -30,25 +30,25 @@ export function NodeProvisionPage({ t, locale, notify, nodes, reload }: Props) {
   }
 
   const agentCommand = result
-    ? `docker run -d --name pars2ray-agent --restart unless-stopped -e NODE_KEY=${result.node_key} -e COUNTRY=${result.country} -e AGENT_TOKEN=${result.agent_token} -p 9100:9100 ghcr.io/theonlyonewithai/pars2ray-agent:latest`
+    ? `git clone https://github.com/TheOnlyOneWithAi/pars2ray.git /opt/pars2ray && cd /opt/pars2ray && docker build -t pars2ray-agent ./agent && docker run -d --name pars2ray-agent --restart unless-stopped -e NODE_KEY=${result.node_key} -e COUNTRY=${result.country} -e AGENT_TOKEN=${result.agent_token} -p 9100:9100 pars2ray-agent`
     : ''
 
   return <>
-    <Panel title={t('managedNodes')} eyebrow="INFRASTRUCTURE" className="page-panel" action={<button className="button primary" onClick={() => { setResult(null); setShow(true) }}><Icon name="plus" size={15}/>{t('addNode')}</button>}>
-      <div className="node-add-hint">{t('nodeAddHint')}</div>
+    <Panel title={t('managedNodes')} eyebrow="INFRASTRUCTURE" className="page-panel" action={<button className="button primary" onClick={() => { setResult(null); setShow(true) }}><Icon name="plus" size={15}/>{t('create')}</button>}>
+      <div>{t('managedNodes')} — {t('endpoint')} + {t('agent')} provisioning</div>
     </Panel>
     <NodesPage t={t} locale={locale} notify={notify} nodes={nodes} reload={reload}/>
-    {show && <Modal title={result ? t('nodeCreated') : t('addNode')} onClose={() => setShow(false)}>
+    {show && <Modal title={result ? t('completed') : t('create')} onClose={() => setShow(false)}>
       {!result ? <form className="modal-body form-grid" onSubmit={create}>
-        <Field label={t('nodeKey')}><input name="node_key" placeholder="DE1" pattern="[A-Za-z]{2}[0-9]{0,3}" required autoFocus/></Field>
+        <Field label={t('name')}><input name="node_key" placeholder="DE1" pattern="[A-Za-z]{2}[0-9]{0,3}" required autoFocus/></Field>
         <Field label={t('country')}><input name="country" placeholder="DE" minLength={2} maxLength={2} required/></Field>
         <Field label={t('endpoint')} className="span-2"><input name="endpoint" type="url" placeholder="https://node.example.com:9100" required/></Field>
-        <div className="form-actions span-2"><button type="button" className="button ghost" onClick={() => setShow(false)}>{t('cancel')}</button><button className="button primary">{t('addNode')}</button></div>
+        <div className="form-actions span-2"><button type="button" className="button ghost" onClick={() => setShow(false)}>{t('cancel')}</button><button className="button primary">{t('create')}</button></div>
       </form> : <div className="modal-body">
-        <p>{t('nodeTokenWarning')}</p>
-        <Field label={t('agentToken')}><textarea readOnly rows={3} value={result.agent_token}/></Field>
-        <Field label={t('agentCommand')}><textarea readOnly rows={5} value={agentCommand}/></Field>
-        <div className="form-actions"><button className="button primary" onClick={() => navigator.clipboard?.writeText(agentCommand)}>{t('copyCommand')}</button><button className="button ghost" onClick={() => setShow(false)}>{t('close')}</button></div>
+        <p>{t('revealOnce')}</p>
+        <Field label="AGENT TOKEN"><textarea readOnly rows={3} value={result.agent_token}/></Field>
+        <Field label="INSTALL COMMAND"><textarea readOnly rows={7} value={agentCommand}/></Field>
+        <div className="form-actions"><button className="button primary" onClick={() => navigator.clipboard?.writeText(agentCommand)}>{t('create')}</button><button className="button ghost" onClick={() => setShow(false)}>{t('close')}</button></div>
       </div>}
     </Modal>}
   </>
