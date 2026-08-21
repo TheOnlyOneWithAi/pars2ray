@@ -47,10 +47,29 @@ set_env_value(){ local key="$1" value="$2" tmp="${PARS2RAY_ENV_FILE}.tmp.$$"; ca
 random_hex(){ openssl rand -hex 32; }
 prompt_value(){ local p="$1" d="${2:-}" v; read -r -p "$p${d:+ [$d]}: " v || true; printf '%s' "${v:-$d}"; }
 prompt_secret(){ local p="$1" v c; while true; do read -r -s -p "$p: " v || true; printf '\n'; [[ -n "$v" ]] || { log "Value cannot be empty."; continue; }; read -r -s -p "Confirm: " c || true; printf '\n'; [[ "$v" == "$c" ]] || { log "Values do not match. Try again."; continue; }; printf '%s' "$v"; return; done; }
+choose_network_subnet(){
+  local existing candidate probe
+  existing="$(read_env_value PARS2RAY_NETWORK_SUBNET)"
+  if [[ -n "$existing" ]]; then
+    printf '%s' "$existing"
+    return
+  fi
+  # Prefer private /24 ranges that are unlikely to overlap VPS/provider networks.
+  for candidate in 10.250.0.0/24 10.251.0.0/24 10.252.0.0/24 172.30.0.0/24 172.31.0.0/24 192.168.250.0/24; do
+    probe="${candidate%/24}.1"
+    if ! ip route get "$probe" >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return
+    fi
+  done
+  # Docker can still allocate an unused network if every preferred probe is routed.
+  printf '%s' '10.250.0.0/24'
+}
 configure_environment(){
-  [[ -f "$PARS2RAY_ENV_FILE" ]] || cp "$PARS2RAY_INSTALL_DIR/.env.example" "$PARS2RAY_ENV_FILE"; chmod 600 "$PARS2RAY_ENV_FILE"; local p j m
+  [[ -f "$PARS2RAY_ENV_FILE" ]] || cp "$PARS2RAY_INSTALL_DIR/.env.example" "$PARS2RAY_ENV_FILE"; chmod 600 "$PARS2RAY_ENV_FILE"; local p j m subnet
   p="$(read_env_value POSTGRES_PASSWORD)"; [[ -n "$p" && "$p" != replace-with-* ]] || p="${PARS2RAY_POSTGRES_PASSWORD:-$(random_hex)}"; j="$(read_env_value JWT_SECRET)"; [[ -n "$j" && "$j" != replace-with-* ]] || j="$(random_hex)"; m="$(read_env_value MASTER_SECRET)"; [[ -n "$m" && "$m" != replace-with-* ]] || m="$(random_hex)"
-  set_env_value POSTGRES_PASSWORD "$p"; set_env_value JWT_SECRET "$j"; set_env_value MASTER_SECRET "$m"; set_env_value ENVIRONMENT production; set_env_value DEBUG false; set_env_value DATABASE_URL 'postgresql+psycopg://pars2ray:${POSTGRES_PASSWORD}@db:5432/pars2ray?connect_timeout=5'; set_env_value REDIS_URL 'redis://redis:6379/0'
+  subnet="$(choose_network_subnet)"
+  set_env_value POSTGRES_PASSWORD "$p"; set_env_value JWT_SECRET "$j"; set_env_value MASTER_SECRET "$m"; set_env_value PARS2RAY_NETWORK_SUBNET "$subnet"; set_env_value ENVIRONMENT production; set_env_value DEBUG false; set_env_value DATABASE_URL 'postgresql+psycopg://pars2ray:${POSTGRES_PASSWORD}@db:5432/pars2ray?connect_timeout=5'; set_env_value REDIS_URL 'redis://redis:6379/0'
 }
 configure_first_run(){
   [[ "$PARS2RAY_FIRST_INSTALL" == 1 ]] || return 0; local u e p port host
@@ -59,7 +78,7 @@ configure_first_run(){
 start_and_verify(){
   local port url attempt compose_file="$PARS2RAY_INSTALL_DIR/deploy/docker-compose.yml"; port="$(read_env_value PANEL_HTTP_PORT)"; port="${port:-8000}"; "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" config >/dev/null
   log "Pre-pulling database images"; "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" pull db redis >/dev/null 2>&1 & local pid=$!; "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" build --pull=false master; wait "$pid" || log "Pre-pull failed; compose will retry"
-  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" up -d; url="http://127.0.0.1:${port}/health"; log "Waiting for master health: $url"
+  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" up -d --force-recreate; url="http://127.0.0.1:${port}/health"; log "Waiting for master health: $url"
   for attempt in $(seq 1 45); do curl -fsS --connect-timeout 1 --max-time 2 "$url" >/dev/null 2>&1 && { log "Master health check passed"; return; }; ((attempt==1||attempt%10==0)) && log "Health not ready yet ($attempt/45)"; sleep 1; done
   printf '\n[pars2ray] Master diagnostics:\n' >&2; "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" ps >&2 || true; "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" logs --tail=160 master >&2 || true; "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" logs --tail=60 db >&2 || true; die "Master did not become healthy"
 }
