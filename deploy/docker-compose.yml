@@ -7,7 +7,7 @@ services:
     environment:
       POSTGRES_DB: pars2ray
       POSTGRES_USER: pars2ray
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set; run deploy/install.sh}
     volumes:
       - pars2ray_db:/var/lib/postgresql/data
     healthcheck:
@@ -86,5 +86,11 @@ services:
 volumes:
   pars2ray_db:
   pars2ray_redis:
+
 networks:
   pars2ray:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: ${PARS2RAY_NETWORK_SUBNET:-10.250.0.0/24}
