@@ -14,12 +14,12 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from app.services.core_manager import apply, capability, core_status, restart_service, rollback
+from app.services.inbound_manager import current_config, update_existing_inbounds
 
 AGENT_VERSION = os.getenv("AGENT_VERSION", "2.0.0")
 NODE_KEY = os.getenv("NODE_KEY", "UNSET")
 COUNTRY = os.getenv("COUNTRY", "")
 AGENT_TOKEN = os.getenv("AGENT_TOKEN", "")
-
 app = FastAPI(title=f"Pars2Ray Node Agent {NODE_KEY}", version=AGENT_VERSION, docs_url=None, redoc_url=None, openapi_url=None)
 
 
@@ -30,7 +30,6 @@ def authorize(token: str | None) -> None:
 
 @app.get("/health")
 def health() -> dict:
-    # Keep the unauthenticated liveness endpoint intentionally non-sensitive.
     return {"ok": True}
 
 
@@ -73,7 +72,6 @@ def _public_addresses(host: str) -> list[tuple[int, str]]:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise HTTPException(status_code=422, detail="host_resolution_failed") from exc
-
     addresses: list[tuple[int, str]] = []
     seen: set[tuple[int, str]] = set()
     for family, _, _, _, sockaddr in infos:
@@ -82,7 +80,6 @@ def _public_addresses(host: str) -> list[tuple[int, str]]:
             parsed = ipaddress.ip_address(address)
         except ValueError:
             continue
-        # Agent benchmarks must not be usable as an SSRF/internal-network probe.
         if not parsed.is_global:
             raise HTTPException(status_code=422, detail="benchmark_target_must_be_public")
         item = (family, address)
@@ -119,8 +116,10 @@ class Command(StrEnum):
     GET_STATUS = "GET_STATUS"
     GET_METRICS = "GET_METRICS"
     GET_CORE_STATUS = "GET_CORE_STATUS"
+    GET_CONFIG = "GET_CONFIG"
     RUN_BENCHMARK = "RUN_BENCHMARK"
     APPLY_CONFIG = "APPLY_CONFIG"
+    UPDATE_EXISTING_INBOUNDS = "UPDATE_EXISTING_INBOUNDS"
     ROLLBACK = "ROLLBACK"
     RESTART_SERVICE = "RESTART_SERVICE"
 
@@ -139,10 +138,14 @@ def command(request: CommandRequest, x_agent_token: str | None = Header(default=
         return metrics(x_agent_token)
     if request.command == Command.GET_CORE_STATUS:
         return {"ok": True, **core_status()}
+    if request.command == Command.GET_CONFIG:
+        return {"ok": True, **current_config()}
     if request.command == Command.RUN_BENCHMARK:
         return benchmark(BenchmarkRequest(**request.payload), x_agent_token)
     if request.command == Command.APPLY_CONFIG:
         return apply(request.payload)
+    if request.command == Command.UPDATE_EXISTING_INBOUNDS:
+        return update_existing_inbounds(request.payload.get("updates", []))
     if request.command == Command.ROLLBACK:
         return rollback()
     if request.command == Command.RESTART_SERVICE:
