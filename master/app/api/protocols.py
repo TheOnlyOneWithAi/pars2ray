@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import html
 import json
-from datetime import datetime
 from urllib.parse import quote
 from uuid import NAMESPACE_URL, uuid5
 
@@ -12,7 +11,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import current_user, require_roles
+from app.api.deps import require_roles
 from app.core.security import token_hash, utcnow
 from app.db.base import get_db
 from app.models.entities import Node, Route, Subscription, SystemSetting, User
@@ -22,6 +21,7 @@ from app.services.config_builder import build_config
 from app.services.panel_proxy import apply_proxy
 
 router = APIRouter(prefix="/api/v1", tags=["protocols"])
+public_router = APIRouter(tags=["subscriptions"])
 
 
 def _setting(db: Session, key: str, default: str = "") -> str:
@@ -70,27 +70,24 @@ def _connection_lines(db: Session, sub: Subscription, token: str) -> list[str]:
     lines: list[str] = []
     client_id = _client_id(token_hash(token))
     for route in _routes_for_subscription(db, sub):
-        cfg = route.config_enc
-        # Route config is intentionally stored encrypted; public subscription output
-        # uses the safe public fields on Route and the panel/node endpoint fallback.
-        server = ""
+        data: dict = {}
         try:
             from app.core.security import decrypt_secret
-            raw = decrypt_secret(cfg) if cfg else ""
+            raw = decrypt_secret(route.config_enc) if route.config_enc else ""
             data = json.loads(raw) if raw else {}
-            server = str(data.get("server") or data.get("host") or "")
         except Exception:
             data = {}
+        server = str(data.get("server") or data.get("host") or "")
         if not server:
             node = db.scalar(select(Node).where(Node.node_key == route.node_keys[0])) if route.node_keys else None
-            server = (node.endpoint.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0] if node else "")
-        port = int(data.get("port", 443)) if isinstance(data, dict) else 443
+            server = (node.endpoint.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0] if node else "")
+        port = int(data.get("port", 443))
         name = quote(route.name, safe="")
         if route.protocol == "vless":
             lines.append(f"vless://{client_id}@{server}:{port}?type={quote(route.transport)}&security={'tls' if data.get('tls') else 'none'}#{name}")
         elif route.protocol == "vmess":
             payload = {"v":"2","ps":route.name,"add":server,"port":str(port),"id":client_id,"aid":"0","net":route.transport,"tls":"tls" if data.get('tls') else ""}
-            lines.append("vmess://" + base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=") )
+            lines.append("vmess://" + base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("="))
         elif route.protocol == "trojan":
             lines.append(f"trojan://{client_id}@{server}:{port}?security={'tls' if data.get('tls') else 'none'}&type={quote(route.transport)}#{name}")
         elif route.protocol == "hysteria2":
@@ -102,8 +99,18 @@ def _connection_lines(db: Session, sub: Subscription, token: str) -> list[str]:
     return lines
 
 
+def _decrypt_route_config(route: Route) -> dict:
+    if not route.config_enc:
+        return {}
+    try:
+        from app.core.security import decrypt_secret
+        return json.loads(decrypt_secret(route.config_enc))
+    except Exception:
+        return {}
+
+
 @router.post("/routes/{route_id}/build-config")
-async def build_route_config(route_id: int, payload: ConfigBuildRequest, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "OPERATOR"))) -> dict:
+async def build_route_config(route_id: int, payload: ConfigBuildRequest, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "OPERATOR"))) -> dict:
     route = db.get(Route, route_id)
     if not route:
         raise HTTPException(status_code=404, detail="route_not_found")
@@ -126,16 +133,6 @@ async def build_route_config(route_id: int, payload: ConfigBuildRequest, request
                 raise HTTPException(status_code=502, detail={"node": key, "reason": result.get("reason", "apply_failed")})
             applied.append(key)
     return {"ok": True, "route_id": route.id, "core": route.core, "protocol": route.protocol, "transport": route.transport, "config": config, "applied_nodes": applied}
-
-
-def _decrypt_route_config(route: Route) -> dict:
-    if not route.config_enc:
-        return {}
-    try:
-        from app.core.security import decrypt_secret
-        return json.loads(decrypt_secret(route.config_enc))
-    except Exception:
-        return {}
 
 
 @router.get("/system/panel-domain")
@@ -185,7 +182,7 @@ def get_subscription_html(db: Session = Depends(get_db), user: User = Depends(re
     return {"html": _template(db)}
 
 
-@router.get("/sub/{token}", response_class=HTMLResponse, include_in_schema=False)
+@public_router.get("/sub/{token}", response_class=HTMLResponse, include_in_schema=False)
 def subscription_page(token: str, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     found = _subscription_rows(db, token)
     if not found:
@@ -193,20 +190,11 @@ def subscription_page(token: str, request: Request, db: Session = Depends(get_db
     sub, user = found
     lines = _connection_lines(db, sub, token)
     title = _setting(db, "subscription.title", "Pars2Ray Subscription")
-    template = _template(db)
-    values = {
-        "title": html.escape(title),
-        "username": html.escape(user.username),
-        "expires_at": html.escape(sub.expires_at.isoformat()),
-        "token": html.escape(token),
-        "subscription_url": html.escape(str(request.url)),
-        "configs": html.escape("\n".join(lines)),
-        "config_count": str(len(lines)),
-    }
-    return HTMLResponse(_render(template, values))
+    values = {"title": html.escape(title), "username": html.escape(user.username), "expires_at": html.escape(sub.expires_at.isoformat()), "token": html.escape(token), "subscription_url": html.escape(str(request.url)), "configs": html.escape("\n".join(lines)), "config_count": str(len(lines))}
+    return HTMLResponse(_render(_template(db), values))
 
 
-@router.get("/sub/{token}/raw", response_class=PlainTextResponse, include_in_schema=False)
+@public_router.get("/sub/{token}/raw", response_class=PlainTextResponse, include_in_schema=False)
 def subscription_raw(token: str, db: Session = Depends(get_db)) -> PlainTextResponse:
     found = _subscription_rows(db, token)
     if not found:
