@@ -31,7 +31,7 @@ def build_xray(route: dict[str, Any], clients: list[dict[str, Any]]) -> dict[str
     cfg = deepcopy(route.get("config") or {})
     if protocol not in XRAY_PROTOCOLS or transport not in TRANSPORTS:
         raise ValueError("unsupported_xray_protocol_or_transport")
-    inbound: dict[str, Any] = {"tag": route.get("tag", route.get("name", "pars2ray")), "listen": cfg.get("listen", "0.0.0.0"), "port": int(cfg.get("port", 443)), "protocol": protocol, "settings": {}, "streamSettings": _transport_settings(transport, cfg)}
+    inbound: dict[str, Any] = {"tag": route.get("tag", route.get("name", "pars2ray")), "listen": cfg.get("listen", "0.0.0.0"), "port": int(cfg.get("port", 443)), "protocol": protocol, "settings": {}, "streamSettings": _transport_settings(transport, cfg)}  # nosec B104 - public proxy inbounds intentionally bind all interfaces by default
     if protocol in {"vless", "vmess"}:
         inbound["settings"] = {"clients": [{"id": c["id"], **({"email": c["email"]} if c.get("email") else {})} for c in clients]}
         if protocol == "vless":
