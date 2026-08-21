@@ -16,8 +16,11 @@ class Settings(BaseSettings):
     app_version: str = "2.2.0"
     environment: str = "production"
     debug: bool = False
-    database_url: str = "postgresql+psycopg://pars2ray:change-me@db:5432/pars2ray"
-    redis_url: str = "redis://redis:6379/0"
+    # Native v2 intentionally defaults to SQLite so a fresh installation needs
+    # no PostgreSQL/Redis/Docker services. PostgreSQL remains supported when a
+    # deployment explicitly supplies a PostgreSQL DATABASE_URL.
+    database_url: str = "sqlite:////opt/pars2ray/data/pars2ray.db"
+    redis_url: str = ""
     jwt_secret: str = Field(default=_DEV_JWT, min_length=32)
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 15
