@@ -34,6 +34,7 @@ services:
     build:
       context: ..
       dockerfile: master/Dockerfile
+      network: host
     restart: unless-stopped
     env_file: ../.env
     environment:
@@ -63,6 +64,7 @@ services:
     build:
       context: ..
       dockerfile: master/Dockerfile
+      network: host
     restart: unless-stopped
     command: ["./scripts/start-worker.sh"]
     env_file: ../.env
