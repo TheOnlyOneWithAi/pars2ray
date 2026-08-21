@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.api.ai_settings import router as ai_settings_router
+from app.api.node_management import router as node_management_router
 from app.core.config import settings
 from app.db.base import Base, SessionLocal, engine
 from app.services.auth import ensure_seed
@@ -63,6 +64,7 @@ def root_health() -> dict:
 
 app.include_router(ai_settings_router)
 app.include_router(router)
+app.include_router(node_management_router)
 
 STATIC = Path(__file__).parent / "static"
 if STATIC.exists():
