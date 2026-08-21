@@ -2,81 +2,72 @@
 
 [English](README.md) | [فارسی](README.fa.md) | [Русский](README.ru.md)
 
-Pars2Ray یک کنترل‌پلین حرفه‌ای برای مدیریت و بهینه‌سازی شبکه است که از یک سرور Master، چند Node Agent سبک، PostgreSQL، Redis، workerهای پس‌زمینه و رابط React/TypeScript تشکیل شده است.
+Pars2Ray یک کنترل‌پلین حرفه‌ای برای مدیریت شبکه است که از Master، Node Agent، PostgreSQL، Redis، worker و پنل React/TypeScript تشکیل شده است.
 
-## ساختار مخزن
+## نصب در حد یک پنل
 
-```text
-master/       API اصلی، منطق کنترل‌پلین، دیتابیس و worker
-agent/        عامل سبک نود؛ بدون رابط کاربری و دیتابیس
-frontend/     پنل سازمانی React + TypeScript
-migrations/   migrationهای Alembic
-installer/    نصب اولیه Master و Node از طریق SSH
-deploy/       Docker Compose، اسکریپت اجرا و پشتیبان‌گیری
-tests/        تست‌های قطعی backend
-```
-
-## شروع سریع
-
-نصب کامل یک‌خطی روی Ubuntu/Debian (قبل از اجرای production فایل `deploy/install.sh` را بررسی کنید):
+ساختار نصب Pars2Ray را عمداً مثل پنل‌های آماده ساده کرده‌ایم: **یک دستور، بدون ساختن یا ویرایش دستی `.env`**.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/parsahoseini549-star/pars2ray/main/deploy/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/TheOnlyOneWithAi/pars2ray/main/install.sh | sudo bash
 ```
 
-اسکریپت در صورت نیاز Docker/Compose را نصب می‌کند، secretهای ناقص را می‌سازد، `.env` موجود را حفظ می‌کند، Master و Worker را بالا می‌آورد و تا پاسخ موفق `/health` صبر می‌کند. برای انتقال مقدار سفارشی از طریق `sudo` از این الگو استفاده کنید: `PARS2RAY_INSTALL_DIR=/srv/pars2ray PARS2RAY_ADMIN_PASSWORD='change-me' sudo -E bash -c 'curl -fsSL https://raw.githubusercontent.com/parsahoseini549-star/pars2ray/main/deploy/install.sh | bash'`.
+نصاب به‌صورت خودکار Docker/Compose را در صورت نیاز نصب می‌کند، نسخه فعلی پروژه را دریافت می‌کند، secretهای امنیتی را می‌سازد، یک subnet مناسب برای Docker انتخاب می‌کند، اطلاعات پنل را می‌پرسد، PostgreSQL و Redis و Master و Worker را بالا می‌آورد، migrationها را اجرا می‌کند، سلامت پنل را بررسی می‌کند و در پایان آدرس پنل را نمایش می‌دهد.
+
+اگر نصب قبلی وجود داشته باشد، اطلاعات `.env` و داده‌های Docker حفظ می‌شوند.
+
+### فقط این ۴ مورد پرسیده می‌شود
+
+در اولین نصب:
+
+1. نام کاربری پنل
+2. ایمیل پنل
+3. رمز عبور پنل
+4. پورت پنل
+
+رمز PostgreSQL، JWT secret، Master secret و تنظیمات شبکه به‌صورت خودکار ساخته می‌شوند. **لازم نیست `.env` را دستی بسازید یا تغییر دهید.**
+
+پس از پایان نصب، پنل با آدرسی شبیه زیر آماده است:
+
+```text
+http://SERVER_IP:8000/
+```
+
+### بعد از نصب
+
+دیگر لازم نیست با Docker Compose و مسیرهای طولانی کار کنید:
+
+```bash
+pars2ray status
+pars2ray restart
+pars2ray logs
+pars2ray update
+```
+
+دستورهای موجود شامل `start`، `stop`، `restart`، `status`، `logs`، `master-logs`، `worker-logs`، `update`، `config`، `install` و `uninstall` هستند.
+
+### نصب مستقیم نسخه قدیمی‌تر
+
+در صورت نیاز، اسکریپت اصلی هم مستقیماً قابل اجراست:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TheOnlyOneWithAi/pars2ray/main/deploy/install.sh | sudo bash
+```
+
+## نصب دستی برای توسعه
+
+برای توسعه‌دهندگان، روش دستی همچنان وجود دارد:
 
 ```bash
 cp .env.example .env
-# تمام مقادیر replace-with-* را تغییر دهید
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 ```
 
-پس از اجرا، پنل در `http://localhost:8000/` در دسترس است. مستندات OpenAPI 3.1 نیز از مسیرهای `/docs`، `/redoc` و `/openapi.json` ارائه می‌شوند. حساب Super Admin اولیه از متغیرهای `ADMIN_USER`، `ADMIN_PASSWORD` و `ADMIN_EMAIL` ساخته می‌شود.
-
-پنل شامل تله‌متری زنده ترافیک، عملیات نودها، فعال‌سازی مسیر، نمای پروتکل‌ها، ارتقای آزمایش‌ها، اجرای کنترل‌شده Optimizer، مدیریت کاربران RBAC، اشتراک‌ها، پلن‌ها، API Key، تنظیمات اجرایی و Audit Log است. زبان‌های انگلیسی، فارسی با چیدمان RTL و روسی از داخل پنل انتخاب می‌شوند. تمام جدول‌ها، نمودارها و عملیات از API واقعی Master استفاده می‌کنند و فرانت‌اند دادهٔ نمونه تولید نمی‌کند.
-
 ## قابلیت‌های اصلی
 
-- احراز هویت JWT، چرخش Refresh Token، API Key و RBAC
-- نقش‌های Super Admin، Admin، Operator، Reseller و User
-- مدیریت پویا و نامحدود نودها از طریق متغیرهای محیطی مانند `DE1`، `DE2` و `NL1`
-- Heartbeat، جمع‌آوری Metrics، Benchmark، همگام‌سازی تنظیمات، Rollback و گزارش نسخه
-- پشتیبانی از Xray و sing-box با فرمان‌های از پیش تعریف‌شده، شامل وضعیت واقعی Core و سرویس
-- ذخیره تاریخچه آزمایش‌ها در سطوح `GOLDEN`، `VERIFIED` و `EXPERIMENTAL`
-- بهینه‌ساز مبتنی بر Rule Engine، حافظه آزمایش‌ها، Validator و Canary
-- مدیریت کاربران، پلن‌ها، اشتراک‌ها، ترافیک، API Key و Audit Log
-- Docker Compose، PostgreSQL، Redis، Alembic، backup و GitHub Actions CI
+پنل شامل telemetry زنده، مدیریت نودها، route activation، inventory پروتکل‌ها، experimentها، optimizer کنترل‌شده، RBAC، اشتراک‌ها، پلن‌ها، API Key، تنظیمات runtime، AI اختیاری و Audit Log است. زبان‌های فارسی RTL، انگلیسی و روسی از داخل پنل قابل انتخاب هستند.
 
-## امنیت
-
-- رمزهای عبور با Argon2id هش می‌شوند.
-- Refresh Tokenها و API Keyها به‌صورت هش‌شده ذخیره می‌شوند.
-- توکن نود و تنظیمات حساس Route به‌صورت رمزنگاری‌شده نگهداری می‌شوند.
-- Agent هیچ endpoint برای اجرای shell دلخواه، آپلود فایل یا نمایش Swagger ندارد.
-- اطلاعات حساس نودها و Routeها در API، رابط کاربری یا لاگ خام نمایش داده نمی‌شوند.
-
-## بهینه‌ساز هوشمند
-
-مدل هوش مصنوعی مستقیماً تولید را کنترل نمی‌کند. مسیر تصمیم‌گیری شامل Telemetry، Rule Engine، حافظه، تصمیم AI، Validator، Canary و سپس Production است. درخواست‌های عادی و تغییرات جزئی بدون فراخوانی مدل با نتیجه `KEEP` مدیریت می‌شوند.
-
-یکپارچه‌سازی OpenAI از Responses API، خروجی ساختاریافته JSON Schema، `store=false`، reasoning کم‌هزینه و prompt caching استفاده می‌کند.
-
-## حالت National Mode
-
-اگر سرویس‌های خارجی یا API هوش مصنوعی در دسترس نباشند، Pars2Ray با حافظه آزمایش‌ها، تنظیمات Golden، قوانین محلی و موتور Benchmark به کار ادامه می‌دهد. سیستم ابتدا روش‌های موفق قبلی را آزمایش می‌کند و سپس فقط از templateهای داخلی و محدود استفاده می‌کند.
-
-## حمایت از پروژه
-
-اگر Pars2Ray برای شما مفید بوده یا در مدیریت زیرساخت صرفه‌جویی ایجاد کرده است، می‌توانید از ادامه توسعه آن حمایت کنید. کمک‌ها صرف نگهداری، تست و هزینه‌های زیرساخت می‌شوند.
-
-```text
-UQCWzDFlNgoLT55ZvtGC13W5zxwkJzwdBnh8Zv-IeYvX5pFc
-```
-
-استفاده، ستاره‌دادن و معرفی پروژه نیز کمک بزرگی به ادامه مسیر آن است.
-
-## بررسی و تست
+## تست
 
 ```bash
 PYTHONPATH=master pytest -q tests
@@ -84,4 +75,4 @@ python -m compileall -q master/app agent/app installer
 cd frontend && npm ci && npm run typecheck && npm run build
 ```
 
-برای جزئیات بیشتر، فایل‌های [معماری](ARCHITECTURE.md)، [API](API.md)، [استقرار](DEPLOYMENT.md) و [امنیت](SECURITY.md) را ببینید.
+برای جزئیات معماری، استقرار و امنیت، فایل‌های `ARCHITECTURE.md`، `DEPLOYMENT.md` و `SECURITY.md` را ببینید.

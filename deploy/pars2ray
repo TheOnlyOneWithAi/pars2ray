@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
+COMPOSE_FILE="$INSTALL_DIR/deploy/docker-compose.yml"
+ENV_FILE="$INSTALL_DIR/.env"
+
+fail(){ echo "[pars2ray] ERROR: $*" >&2; exit 1; }
+[[ -d "$INSTALL_DIR" ]] || fail "Pars2Ray is not installed at $INSTALL_DIR"
+[[ -f "$COMPOSE_FILE" ]] || fail "Compose file not found: $COMPOSE_FILE"
+
+compose(){
+  if docker compose version >/dev/null 2>&1; then
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+  else
+    fail "Docker Compose is not installed"
+  fi
+}
+
+case "${1:-help}" in
+  install|reinstall)
+    exec bash "$INSTALL_DIR/deploy/install.sh"
+    ;;
+  update)
+    git -C "$INSTALL_DIR" fetch --depth 1 origin main
+    git -C "$INSTALL_DIR" reset --hard origin/main
+    compose build --pull master
+    compose up -d --force-recreate
+    compose ps
+    ;;
+  start)
+    compose up -d
+    compose ps
+    ;;
+  stop)
+    compose stop
+    ;;
+  restart)
+    compose restart
+    compose ps
+    ;;
+  status|ps)
+    compose ps
+    ;;
+  logs)
+    shift || true
+    compose logs --tail="${PARS2RAY_LOG_LINES:-150}" "$@"
+    ;;
+  master-logs)
+    compose logs --tail="${PARS2RAY_LOG_LINES:-150}" master
+    ;;
+  worker-logs)
+    compose logs --tail="${PARS2RAY_LOG_LINES:-150}" worker
+    ;;
+  shell)
+    exec bash
+    ;;
+  config)
+    compose config
+    ;;
+  uninstall)
+    read -r -p "Remove Pars2Ray containers and volumes? [y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]] || exit 0
+    compose down -v --remove-orphans
+    rm -f /usr/local/bin/pars2ray
+    echo "[pars2ray] Removed. The project files remain in $INSTALL_DIR."
+    ;;
+  help|-h|--help)
+    cat <<'EOF'
+Pars2Ray management CLI
+
+Usage: pars2ray <command>
+
+  install       Run the installer / repair an installation
+  update        Pull latest main and recreate the stack
+  start         Start Pars2Ray
+  stop          Stop Pars2Ray
+  restart       Restart Pars2Ray
+  status        Show container status
+  logs          Show all service logs
+  master-logs   Show master logs
+  worker-logs   Show worker logs
+  config        Validate and print Compose configuration
+  uninstall     Remove containers and data volumes (with confirmation)
+  help          Show this help
+
+First installation is intentionally interactive: the installer generates
+runtime secrets and asks only for the panel account and port. No .env editing
+is required.
+EOF
+    ;;
+  *)
+    fail "Unknown command '$1'. Run 'pars2ray help'."
+    ;;
+esac
