@@ -56,7 +56,7 @@ class Permission(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(80), unique=True, index=True)
-    roles: Mapped[list[Role]] = relationship(secondary=role_permissions, back_populates="permissions")
+    roles: Mapped[list[Role]] = relationship(secondary=role_permissions, back_populates="roles")
 
 
 class Node(Base):
@@ -68,6 +68,7 @@ class Node(Base):
     endpoint: Mapped[str] = mapped_column(String(255))
     agent_token_hash: Mapped[str] = mapped_column(String(128), unique=True)
     agent_token_enc: Mapped[str] = mapped_column(Text)
+    ssh_config_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     agent_version: Mapped[str] = mapped_column(String(64), default="unknown")
     status: Mapped[str] = mapped_column(String(24), default="UNKNOWN", index=True)
     score: Mapped[float] = mapped_column(Float, default=0)
