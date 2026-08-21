@@ -4,6 +4,7 @@ import io
 import json
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 
 import paramiko
 
@@ -22,20 +23,16 @@ class SSHConfig:
 
 def decode_config(value: str) -> SSHConfig:
     raw = json.loads(decrypt_secret(value))
-    return SSHConfig(
-        host=str(raw["host"]).strip(),
-        port=int(raw.get("port", 22)),
-        username=str(raw["username"]).strip(),
-        password=raw.get("password") or None,
-        private_key=raw.get("private_key") or None,
-        passphrase=raw.get("passphrase") or None,
-    )
+    return SSHConfig(host=str(raw["host"]).strip(), port=int(raw.get("port", 22)), username=str(raw["username"]).strip(), password=raw.get("password") or None, private_key=raw.get("private_key") or None, passphrase=raw.get("passphrase") or None)
 
 
 def _client(config: SSHConfig) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
-    client.load_system_host_keys()
-    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    known_hosts = Path.home() / ".ssh" / "known_hosts"
+    known_hosts.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if known_hosts.exists():
+        client.load_host_keys(str(known_hosts))
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     pkey = None
     if config.private_key:
         key_stream = io.StringIO(config.private_key)
@@ -48,18 +45,8 @@ def _client(config: SSHConfig) -> paramiko.SSHClient:
                 continue
         if pkey is None:
             raise ValueError("invalid_private_key")
-    client.connect(
-        config.host,
-        port=config.port,
-        username=config.username,
-        password=config.password,
-        pkey=pkey,
-        timeout=15,
-        banner_timeout=15,
-        auth_timeout=15,
-        look_for_keys=False,
-        allow_agent=False,
-    )
+    client.connect(config.host, port=config.port, username=config.username, password=config.password, pkey=pkey, timeout=15, banner_timeout=15, auth_timeout=15, look_for_keys=False, allow_agent=False)
+    client.save_host_keys(str(known_hosts))
     return client
 
 
@@ -117,7 +104,7 @@ def provision(config: SSHConfig, node_key: str, country: str, agent_token: str) 
     try:
         script = INSTALL_SCRIPT.replace("NODE_KEY_VALUE", shlex.quote(node_key)).replace("COUNTRY_VALUE", shlex.quote(country)).replace("AGENT_TOKEN_VALUE", shlex.quote(agent_token))
         command = "printf '%s\\n' %s | bash" % (shlex.quote(script), "")
-        stdin, stdout, stderr = client.exec_command(command, timeout=180)
+        _, stdout, stderr = client.exec_command(command, timeout=180)
         code = stdout.channel.recv_exit_status()
         if code != 0:
             detail = stderr.read().decode("utf-8", "replace")[-2000:]
@@ -129,7 +116,7 @@ def provision(config: SSHConfig, node_key: str, country: str, agent_token: str) 
 def test(config: SSHConfig) -> dict:
     client = _client(config)
     try:
-        stdin, stdout, stderr = client.exec_command("uname -srm && id -un", timeout=15)
+        _, stdout, stderr = client.exec_command("uname -srm && id -un", timeout=15)
         code = stdout.channel.recv_exit_status()
         if code != 0:
             raise RuntimeError(stderr.read().decode("utf-8", "replace")[-1000:] or "ssh_command_failed")
