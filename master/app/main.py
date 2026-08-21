@@ -6,9 +6,9 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import PlainTextResponse
 
 from app.api.ai_config import router as ai_config_router
 from app.api.routes import router
@@ -35,15 +35,19 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, version=settings.app_version, openapi_version="3.1.0", docs_url="/docs", redoc_url="/redoc", openapi_url="/openapi.json", lifespan=lifespan)
-
-if settings.trusted_host_list:
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_host_list)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_credentials=False, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Master-Secret"])
 
 
+def _host_allowed(request: Request) -> bool:
+    host = (request.headers.get("host") or "").split(":", 1)[0].strip().lower().rstrip(".")
+    return host in {item.lower().rstrip(".") for item in settings.trusted_host_list} or host == "localhost" or host == "127.0.0.1"
+
+
 @app.middleware("http")
 async def security_and_rate_limit(request: Request, call_next):
+    if not _host_allowed(request) and request.url.path not in {"/health", "/api/v1/health"} and not request.url.path.startswith("/sub/"):
+        return PlainTextResponse("Invalid host header", status_code=400)
     if request.url.path not in {"/health", "/api/v1/health", "/docs", "/redoc", "/openapi.json"} and not request.url.path.startswith("/sub/"):
         try:
             enforce(request)
