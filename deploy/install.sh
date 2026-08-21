@@ -79,13 +79,14 @@ wait_for_apt(){
 }
 
 run_bounded(){
-  local seconds="$1" label="$2" log_file="$3"
+  local seconds="$1" label="$2" log_file="$3" rc
   shift 3
   log "$label (timeout: ${seconds}s)"
   if timeout --foreground --kill-after=10s "${seconds}s" "$@" >"$log_file" 2>&1; then
     return 0
+  else
+    rc=$?
   fi
-  local rc=$?
   warn "$label failed or timed out (exit $rc). Diagnostic output:"
   tail -n 120 "$log_file" >&2 || true
   return "$rc"
