@@ -11,6 +11,7 @@ from app.core.config import settings
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$")
 DATA_DIR = Path(os.getenv("PARS2RAY_DATA_DIR", "/opt/pars2ray/data"))
 PROXY_CONFIG = DATA_DIR / "panel-nginx.conf"
+DOMAIN_FILE = DATA_DIR / "panel-domain.txt"
 
 
 def validate_domain(domain: str) -> str:
@@ -34,6 +35,7 @@ def render_config(domain: str, tls: bool) -> str:
 def apply_proxy(domain: str, tls: bool, email: str | None = None) -> dict:
     domain = validate_domain(domain)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DOMAIN_FILE.write_text(domain + "\n", encoding="utf-8")
     if tls:
         if not email or "@" not in email:
             raise ValueError("valid_email_required_for_tls")
