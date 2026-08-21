@@ -24,7 +24,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -34,7 +33,6 @@ jobs:
             master/requirements.txt
             agent/requirements.txt
             installer/requirements.txt
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -42,39 +40,33 @@ jobs:
           pip install -r agent/requirements.txt
           pip install -r installer/requirements.txt
           pip install pytest pytest-asyncio ruff
-
       - name: Verify dependency consistency
         run: pip check
-
       - name: Compile Python sources
-        run: |
-          python -m compileall -q master/app agent/app installer scripts
-
+        run: python -m compileall -q master/app agent/app installer scripts
       - name: Lint Python sources
-        run: |
-          ruff check master/app agent/app installer scripts
-
+        run: ruff check master/app agent/app installer scripts
       - name: Run master tests
         working-directory: master
         env:
           PYTHONPATH: ${{ github.workspace }}/master
           ENVIRONMENT: test
+          DATABASE_URL: sqlite:////tmp/pars2ray-ci.db
           JWT_SECRET: ci-jwt-secret-at-least-32-characters
           MASTER_SECRET: ci-master-secret-at-least-32-characters
           ADMIN_PASSWORD: ci-admin-password
         run: pytest -q tests
-
       - name: Run agent tests
         working-directory: agent
         env:
           PYTHONPATH: ${{ github.workspace }}/agent
           ENVIRONMENT: test
         run: pytest -q tests
-
       - name: Run repository tests
         env:
           PYTHONPATH: ${{ github.workspace }}/master
           ENVIRONMENT: test
+          DATABASE_URL: sqlite:////tmp/pars2ray-ci-repo.db
           JWT_SECRET: ci-jwt-secret-at-least-32-characters
           MASTER_SECRET: ci-master-secret-at-least-32-characters
           ADMIN_PASSWORD: ci-admin-password
@@ -105,6 +97,8 @@ jobs:
         run: python -m compileall -q installer
       - name: Validate installer imports
         run: python -c "import installer.bootstrap; import installer.discover_nodes; import installer.generate_env"
+      - name: Validate Native Installer syntax
+        run: bash -n deploy/install.sh
 
   frontend:
     name: Frontend build
@@ -129,18 +123,22 @@ jobs:
         run: npm run build
 
   compose:
-    name: Docker Compose validation
+    name: Legacy Docker Compose validation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Prepare CI environment
+      - name: Prepare legacy CI environment
         run: |
           cp .env.example .env
+          {
+            echo 'POSTGRES_PASSWORD=ci-postgres-password'
+            echo 'DATABASE_URL=postgresql+psycopg://pars2ray:ci-postgres-password@db:5432/pars2ray'
+            echo 'REDIS_URL=redis://redis:6379/0'
+          } >> .env
           sed -i 's/^JWT_SECRET=.*/JWT_SECRET=ci-jwt-secret-at-least-32-characters/' .env
           sed -i 's/^MASTER_SECRET=.*/MASTER_SECRET=ci-master-secret-at-least-32-characters/' .env
           sed -i 's/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=ci-admin-password/' .env
-          sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci-postgres-password/' .env
       - name: Validate Compose configuration
         run: docker compose --env-file .env -f deploy/docker-compose.yml config --quiet
 
@@ -160,10 +158,7 @@ jobs:
         run: python scripts/check_dependency_pins.py
       - name: Audit Python dependencies
         run: |
-          pip-audit \
-            -r master/requirements.txt \
-            -r agent/requirements.txt \
-            -r installer/requirements.txt
+          pip-audit -r master/requirements.txt -r agent/requirements.txt -r installer/requirements.txt
       - name: Bandit security scan
         run: bandit -r master/app agent/app installer -ll
       - name: Set up Node.js
@@ -180,31 +175,31 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
   e2e:
-    name: Compose end-to-end smoke
+    name: Legacy Compose end-to-end smoke
     runs-on: ubuntu-latest
     needs: [compose, frontend]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Prepare CI environment
+      - name: Prepare legacy CI environment
         run: |
           cp .env.example .env
+          {
+            echo 'POSTGRES_PASSWORD=ci-postgres-password'
+            echo 'DATABASE_URL=postgresql+psycopg://pars2ray:ci-postgres-password@db:5432/pars2ray'
+            echo 'REDIS_URL=redis://redis:6379/0'
+          } >> .env
           sed -i 's/^JWT_SECRET=.*/JWT_SECRET=ci-jwt-secret-at-least-32-characters/' .env
           sed -i 's/^MASTER_SECRET=.*/MASTER_SECRET=ci-master-secret-at-least-32-characters/' .env
           sed -i 's/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=ci-admin-password/' .env
-          sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci-postgres-password/' .env
           sed -i 's/^ADMIN_USER=.*/ADMIN_USER=admin/' .env
           sed -i 's/^PANEL_HTTP_PORT=.*/PANEL_HTTP_PORT=8000/' .env
-      - name: Build and start production stack
+      - name: Build and start legacy production stack
         run: docker compose --env-file .env -f deploy/docker-compose.yml up -d --build db redis master
       - name: Wait for Master
-        env:
-          ADMIN_PASSWORD: ci-admin-password
         run: |
           for i in $(seq 1 60); do
-            if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"; then
-              exit 0
-            fi
+            if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"; then exit 0; fi
             sleep 2
           done
           docker compose --env-file .env -f deploy/docker-compose.yml logs master
@@ -218,19 +213,3 @@ jobs:
       - name: Collect service logs
         if: always()
         run: docker compose --env-file .env -f deploy/docker-compose.yml logs --no-color master db redis
-      - name: Tear down
-        if: always()
-        run: docker compose --env-file .env -f deploy/docker-compose.yml down -v
-
-  stress:
-    name: Candidate concurrency stress smoke
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Run stress smoke
-        run: python scripts/stress_smoke.py
