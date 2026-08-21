@@ -4,7 +4,8 @@ from copy import deepcopy
 from typing import Any
 
 
-PROTOCOLS = {"vless", "vmess", "trojan", "shadowsocks", "hysteria2"}
+XRAY_PROTOCOLS = {"vless", "vmess", "trojan", "shadowsocks"}
+SINGBOX_PROTOCOLS = {"vless", "vmess", "trojan", "shadowsocks", "hysteria2"}
 TRANSPORTS = {"tcp", "grpc", "websocket", "httpupgrade", "xhttp", "quic"}
 
 
@@ -28,32 +29,20 @@ def build_xray(route: dict[str, Any], clients: list[dict[str, Any]]) -> dict[str
     protocol = str(route["protocol"]).lower()
     transport = str(route.get("transport", "tcp")).lower()
     cfg = deepcopy(route.get("config") or {})
-    if protocol not in PROTOCOLS or transport not in TRANSPORTS:
-        raise ValueError("unsupported_protocol_or_transport")
-    inbound: dict[str, Any] = {
-        "tag": route.get("tag", route.get("name", "pars2ray")),
-        "listen": cfg.get("listen", "0.0.0.0"),
-        "port": int(cfg.get("port", 443)),
-        "protocol": protocol,
-        "settings": {},
-        "streamSettings": _transport_settings(transport, cfg),
-    }
+    if protocol not in XRAY_PROTOCOLS or transport not in TRANSPORTS:
+        raise ValueError("unsupported_xray_protocol_or_transport")
+    inbound: dict[str, Any] = {"tag": route.get("tag", route.get("name", "pars2ray")), "listen": cfg.get("listen", "0.0.0.0"), "port": int(cfg.get("port", 443)), "protocol": protocol, "settings": {}, "streamSettings": _transport_settings(transport, cfg)}
     if protocol in {"vless", "vmess"}:
-        inbound["settings"] = {"clients": [{"id": c["id"], **({"email": c["email"]} if c.get("email") else {})} for c in clients], "decryption": "none" if protocol == "vless" else None}
+        inbound["settings"] = {"clients": [{"id": c["id"], **({"email": c["email"]} if c.get("email") else {})} for c in clients]}
         if protocol == "vless":
-            inbound["settings"].pop("decryption", None)
             inbound["settings"]["decryption"] = "none"
     elif protocol == "trojan":
         inbound["settings"] = {"clients": [{"password": c["id"], **({"email": c["email"]} if c.get("email") else {})} for c in clients]}
-    elif protocol == "shadowsocks":
+    else:
         inbound["settings"] = {"method": cfg.get("method", "2022-blake3-aes-128-gcm"), "password": cfg.get("password") or (clients[0]["id"] if clients else "pars2ray")}
-    elif protocol == "hysteria2":
-        inbound["settings"] = {"users": [{"password": c["id"], **({"name": c["email"]} if c.get("email") else {})} for c in clients]}
-    tls = bool(cfg.get("tls", False))
-    if tls:
-        security = inbound.setdefault("streamSettings", {}).setdefault("security", "tls")
-        if security == "tls":
-            inbound["streamSettings"]["tlsSettings"] = {"serverName": cfg.get("server_name") or cfg.get("host", ""), "certificates": cfg.get("certificates", [])}
+    if cfg.get("tls"):
+        inbound["streamSettings"]["security"] = "tls"
+        inbound["streamSettings"]["tlsSettings"] = {"serverName": cfg.get("server_name") or cfg.get("host", ""), "certificates": cfg.get("certificates", [])}
     return {"log": {"loglevel": cfg.get("loglevel", "warning")}, "inbounds": [inbound], "outbounds": [{"protocol": "freedom", "tag": "direct"}], "routing": {"domainStrategy": "AsIs"}}
 
 
@@ -61,8 +50,8 @@ def build_singbox(route: dict[str, Any], clients: list[dict[str, Any]]) -> dict[
     protocol = str(route["protocol"]).lower()
     transport = str(route.get("transport", "tcp")).lower()
     cfg = deepcopy(route.get("config") or {})
-    if protocol not in PROTOCOLS or transport not in TRANSPORTS:
-        raise ValueError("unsupported_protocol_or_transport")
+    if protocol not in SINGBOX_PROTOCOLS or transport not in TRANSPORTS:
+        raise ValueError("unsupported_singbox_protocol_or_transport")
     inbound: dict[str, Any] = {"type": protocol, "tag": route.get("tag", route.get("name", "pars2ray")), "listen": cfg.get("listen", "::"), "listen_port": int(cfg.get("port", 443))}
     if protocol in {"vless", "vmess"}:
         inbound["users"] = [{"uuid": c["id"], **({"name": c["email"]} if c.get("email") else {})} for c in clients]
@@ -71,10 +60,11 @@ def build_singbox(route: dict[str, Any], clients: list[dict[str, Any]]) -> dict[
     elif protocol == "shadowsocks":
         inbound["method"] = cfg.get("method", "2022-blake3-aes-128-gcm")
         inbound["password"] = cfg.get("password") or (clients[0]["id"] if clients else "pars2ray")
-    elif protocol == "hysteria2":
+    else:
         inbound["users"] = [{"password": c["id"], **({"name": c["email"]} if c.get("email") else {})} for c in clients]
     if transport != "tcp":
-        inbound["transport"] = {"type": transport}
+        transport_name = {"websocket": "ws", "httpupgrade": "httpupgrade", "xhttp": "http", "grpc": "grpc", "quic": "quic"}[transport]
+        inbound["transport"] = {"type": transport_name}
         if transport in {"websocket", "httpupgrade", "xhttp"}:
             inbound["transport"]["path"] = cfg.get("path", "/")
             if cfg.get("host"):
