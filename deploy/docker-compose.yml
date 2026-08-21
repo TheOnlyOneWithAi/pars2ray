@@ -12,10 +12,10 @@ services:
       - pars2ray_db:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pars2ray -d pars2ray"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-      start_period: 10s
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
     networks: [pars2ray]
 
   redis:
@@ -26,13 +26,14 @@ services:
       - pars2ray_redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-      start_period: 5s
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
     networks: [pars2ray]
 
   master:
+    image: pars2ray-master:local
     build:
       context: ..
       dockerfile: master/Dockerfile
@@ -48,12 +49,12 @@ services:
       db: {condition: service_healthy}
       redis: {condition: service_healthy}
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
       retries: 12
-      start_period: 45s
-    stop_grace_period: 20s
+      start_period: 30s
+    stop_grace_period: 10s
     security_opt:
       - no-new-privileges:true
     cap_drop: ["ALL"]
@@ -63,10 +64,7 @@ services:
     networks: [pars2ray]
 
   worker:
-    build:
-      context: ..
-      dockerfile: master/Dockerfile
-      network: host
+    image: pars2ray-master:local
     restart: unless-stopped
     command: ["./scripts/start-worker.sh"]
     env_file: ../.env
