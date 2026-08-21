@@ -42,7 +42,7 @@ require_timeout(){
 read_env(){
   local key="$1"
   [[ -f "$ENV_FILE" ]] || return 0
-  awk -F= -v k="$key" '$1==k{sub(/^[^=]*=/,""); print; exit}' "$ENV_FILE"
+  awk -F= -v k="$key" '$1==k{sub(/^[^=]*=/,"" ); print; exit}' "$ENV_FILE"
 }
 
 set_env(){
@@ -63,10 +63,49 @@ apt_common_args=(
   -o DPkg::Lock::Timeout=120
 )
 
+# Pars2Ray deliberately uses well-known official distribution mirrors instead
+# of inheriting an arbitrary VPS/provider mirror. This avoids slow/unreachable
+# provider mirrors such as mirror.iranserver.com while keeping package metadata
+# signed and supplied by the distribution's official archive infrastructure.
+APT_SOURCES_FILE="${TMPDIR:-/tmp}/pars2ray-apt-sources.list"
+
+configure_reliable_apt_sources(){
+  local codename="${VERSION_CODENAME:-}"
+  [[ -n "$codename" ]] || codename="$(lsb_release -cs 2>/dev/null || true)"
+  [[ -n "$codename" ]] || die "Could not determine distribution codename."
+
+  case "${ID:-}" in
+    ubuntu)
+      cat > "$APT_SOURCES_FILE" <<EOF
+# Managed temporarily by Pars2Ray installer. Official Ubuntu archives only.
+deb https://archive.ubuntu.com/ubuntu ${codename} main restricted universe multiverse
+deb https://archive.ubuntu.com/ubuntu ${codename}-updates main restricted universe multiverse
+deb https://security.ubuntu.com/ubuntu ${codename}-security main restricted universe multiverse
+EOF
+      ;;
+    debian)
+      cat > "$APT_SOURCES_FILE" <<EOF
+# Managed temporarily by Pars2Ray installer. Official Debian archives only.
+deb https://deb.debian.org/debian ${codename} main
+deb https://deb.debian.org/debian ${codename}-updates main
+deb https://security.debian.org/debian-security ${codename}-security main
+EOF
+      ;;
+  esac
+  chmod 0644 "$APT_SOURCES_FILE"
+  log "Using official ${ID} APT mirrors (codename: ${codename})"
+}
+
+apt_with_reliable_sources(){
+  apt-get "${apt_common_args[@]}" \
+    -o Dir::Etc::sourcelist="$APT_SOURCES_FILE" \
+    -o Dir::Etc::sourceparts="-" \
+    -o APT::Get::List-Cleanup="0" \
+    "$@"
+}
+
 wait_for_apt(){
   local waited=0 lock
-  # fuser is provided by psmisc and is NOT guaranteed to exist on a minimal
-  # Ubuntu/Debian image. Never make it a prerequisite for installing packages.
   if ! command_exists fuser; then
     log "fuser not installed; relying on APT/DPKG lock timeouts"
     return 0
@@ -108,6 +147,8 @@ install_packages(){
   command_exists tail || die "tail is required."
 
   log "Installing required system packages..."
+  configure_reliable_apt_sources
+  trap 'rm -f "$APT_SOURCES_FILE"' EXIT
   wait_for_apt
 
   local dpkg_audit
@@ -124,18 +165,15 @@ install_packages(){
   fi
 
   local apt_log="${TMPDIR:-/tmp}/pars2ray-apt.$$"
-  trap 'rm -f "$apt_log"' RETURN
-
-  if ! run_bounded "$APT_TIMEOUT" "Updating APT package indexes" "$apt_log" apt-get "${apt_common_args[@]}" update; then
-    die "Could not update APT package indexes. Check DNS/network/repository configuration and rerun the installer."
+  if ! run_bounded "$APT_TIMEOUT" "Updating APT package indexes" "$apt_log" apt_with_reliable_sources update; then
+    die "Could not update APT package indexes using the official mirrors. Check DNS/network access and rerun the installer."
   fi
 
-  if ! run_bounded "$APT_TIMEOUT" "Installing required system packages" "$apt_log" apt-get "${apt_common_args[@]}" install -y ca-certificates curl git openssl python3 python3-venv python3-pip; then
-    die "Required system packages could not be installed."
+  if ! run_bounded "$APT_TIMEOUT" "Installing required system packages" "$apt_log" apt_with_reliable_sources install -y ca-certificates curl git openssl python3 python3-venv python3-pip; then
+    die "Required system packages could not be installed from the official mirrors."
   fi
 
   rm -f "$apt_log"
-  trap - RETURN
   ok "System prerequisites ready"
 }
 
