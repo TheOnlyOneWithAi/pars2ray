@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.ai_config import router as ai_config_router
 from app.api.routes import router
+from app.api.protocols import router as protocols_router
 from app.api.ai_settings import router as ai_settings_router
 from app.api.node_management import router as node_management_router
 from app.core.config import settings
@@ -43,7 +44,7 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allo
 
 @app.middleware("http")
 async def security_and_rate_limit(request: Request, call_next):
-    if request.url.path not in {"/health", "/api/v1/health", "/docs", "/redoc", "/openapi.json"}:
+    if request.url.path not in {"/health", "/api/v1/health", "/docs", "/redoc", "/openapi.json"} and not request.url.path.startswith("/sub/"):
         try:
             enforce(request)
         except Exception as exc:
@@ -70,6 +71,7 @@ def root_health() -> dict:
 app.include_router(ai_settings_router)
 app.include_router(ai_config_router)
 app.include_router(router)
+app.include_router(protocols_router)
 app.include_router(node_management_router)
 
 STATIC = Path(__file__).parent / "static"
