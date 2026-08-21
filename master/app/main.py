@@ -10,6 +10,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from app.api.ai_config import router as ai_config_router
 from app.api.routes import router
 from app.api.ai_settings import router as ai_settings_router
 from app.api.node_management import router as node_management_router
@@ -22,10 +23,6 @@ from app.services.scheduler import start_scheduler, stop_scheduler
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Database schema is owned by Alembic and is migrated by the master
-    # entrypoint before uvicorn starts. Do not call create_all() here: mixing
-    # SQLAlchemy metadata creation with Alembic can bypass migrations and can
-    # race with the worker during a fresh deployment.
     db = SessionLocal()
     try:
         ensure_seed(db)
@@ -36,26 +33,12 @@ async def lifespan(_: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(
-    title=settings.app_name,
-    version=settings.app_version,
-    openapi_version="3.1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
-    lifespan=lifespan,
-)
+app = FastAPI(title=settings.app_name, version=settings.app_version, openapi_version="3.1.0", docs_url="/docs", redoc_url="/redoc", openapi_url="/openapi.json", lifespan=lifespan)
 
 if settings.trusted_host_list:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_host_list)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Master-Secret"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_credentials=False, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Master-Secret"])
 
 
 @app.middleware("http")
@@ -64,20 +47,12 @@ async def security_and_rate_limit(request: Request, call_next):
         try:
             enforce(request)
         except Exception as exc:
-            return JSONResponse(
-                status_code=getattr(exc, "status_code", 429),
-                content={"detail": getattr(exc, "detail", "rate_limit_exceeded")},
-            )
+            return JSONResponse(status_code=getattr(exc, "status_code", 429), content={"detail": getattr(exc, "detail", "rate_limit_exceeded")})
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-
-    # API responses are intentionally never cached because they may contain
-    # user/session data. Vite's hashed assets are immutable and can be cached
-    # for a year, which avoids repeat downloads for panel users and materially
-    # reduces latency/bandwidth on subsequent visits.
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
     elif request.url.path.startswith("/assets/"):
@@ -93,6 +68,7 @@ def root_health() -> dict:
 
 
 app.include_router(ai_settings_router)
+app.include_router(ai_config_router)
 app.include_router(router)
 app.include_router(node_management_router)
 
