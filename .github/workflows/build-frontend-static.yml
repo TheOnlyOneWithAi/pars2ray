@@ -3,6 +3,8 @@ name: Build frontend static assets
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -18,6 +20,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          fetch-depth: 1
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -30,12 +35,12 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
-      - name: Publish static bundle to master
+      - name: Verify static bundle
         run: |
-          rm -rf master/app/static
-          mkdir -p master/app/static
-          cp -a frontend/dist/. master/app/static/
-      - name: Commit generated static bundle
+          test -s master/app/static/index.html
+          test -d master/app/static/assets
+          find master/app/static/assets -type f | grep -q .
+      - name: Publish static bundle to repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -45,6 +50,8 @@ jobs:
             exit 0
           fi
           git commit -m "build(frontend): publish production static bundle"
-          git push
-
-# Keep the generated bundle synchronized with main for native installs.
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+          else
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
