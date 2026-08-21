@@ -1,0 +1,48 @@
+name: Build frontend static assets
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: frontend-static-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+      - name: Publish static bundle to master
+        run: |
+          rm -rf master/app/static
+          mkdir -p master/app/static
+          cp -a frontend/dist/. master/app/static/
+      - name: Commit generated static bundle
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add master/app/static
+          if git diff --cached --quiet; then
+            echo "Static bundle is already up to date."
+            exit 0
+          fi
+          git commit -m "build(frontend): publish production static bundle"
+          git push
