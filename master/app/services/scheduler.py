@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
@@ -20,6 +20,7 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 
 
 async def poll_nodes() -> None:
+    """Check every configured node once, then stop checking them until restart."""
     db = SessionLocal()
     reachable = 0
     try:
@@ -47,6 +48,7 @@ async def poll_nodes() -> None:
         state = national_engine.update_connectivity(db, foreign_reachable=(reachable > 0 or not nodes))
         state.ai_status = "READY" if settings.ai_enabled and settings.openai_api_key else "DISABLED"
         db.commit()
+        logger.info("one-shot node check complete: checked=%d reachable=%d", len(nodes), reachable)
     finally:
         db.close()
 
@@ -68,7 +70,16 @@ async def intelligence_tick() -> None:
 def start_scheduler() -> None:
     if scheduler.running:
         return
-    scheduler.add_job(poll_nodes, "interval", seconds=max(settings.node_poll_seconds, 15), id="node-poll", replace_existing=True, coalesce=True, max_instances=1)
+    # Node health is intentionally one-shot: all existing nodes are checked once
+    # after startup and are not polled again until the master process restarts.
+    scheduler.add_job(
+        poll_nodes,
+        "date",
+        run_date=datetime.utcnow() + timedelta(seconds=1),
+        id="node-poll-once",
+        replace_existing=True,
+        max_instances=1,
+    )
     scheduler.add_job(intelligence_tick, "interval", seconds=max(getattr(settings, "intelligence_interval_seconds", 300), 30), id="intelligence-cycle", replace_existing=True, coalesce=True, max_instances=1)
     scheduler.start()
 
