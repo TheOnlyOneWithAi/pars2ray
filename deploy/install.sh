@@ -2,14 +2,13 @@
 set -Eeuo pipefail
 
 # Pars2Ray one-command production installer.
-# First install is interactive: panel credentials + node inventory are collected.
-# All infrastructure secrets are generated automatically and .env is never edited by the user.
+# Fresh install is interactive for the panel account only; all infrastructure
+# secrets are generated automatically. Users never need to edit .env.
 
 PARS2RAY_REPOSITORY="${PARS2RAY_REPOSITORY:-https://github.com/TheOnlyOneWithAi/pars2ray.git}"
 PARS2RAY_REF="${PARS2RAY_REF:-main}"
 PARS2RAY_INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
 PARS2RAY_ENV_FILE="${PARS2RAY_INSTALL_DIR}/.env"
-PARS2RAY_GENERATED_ADMIN_PASSWORD=0
 PARS2RAY_FIRST_INSTALL=0
 
 log() { printf '[pars2ray] %s\n' "$*"; }
@@ -17,7 +16,6 @@ die() { printf '[pars2ray] ERROR: %s\n' "$*" >&2; exit 1; }
 
 [[ "$(id -u)" == "0" ]] || die "Run as root: curl -fsSL https://raw.githubusercontent.com/TheOnlyOneWithAi/pars2ray/main/deploy/install.sh | bash"
 [[ -r /etc/os-release ]] || die "Only Ubuntu and Debian are supported"
-# shellcheck disable=SC1091
 . /etc/os-release
 case "${ID:-}" in
   ubuntu|debian) ;;
@@ -76,13 +74,10 @@ read_env_value() {
 }
 
 set_env_value() {
-  local key="$1" value="$2" escaped
+  local key="$1" value="$2"
   case "$value" in *$'\n'*|*$'\r'*) die "$key cannot contain a newline" ;; esac
-  escaped="${value//\\/\\\\}"
-  escaped="${escaped//|/\\|}"
-  escaped="${escaped//&/\\&}"
   if grep -q "^${key}=" "$PARS2RAY_ENV_FILE"; then
-    sed -i "s|^${key}=.*|${key}=${escaped}|" "$PARS2RAY_ENV_FILE"
+    sed -i "s|^${key}=.*|${key}=${value}|" "$PARS2RAY_ENV_FILE"
   else
     printf '\n%s=%s\n' "$key" "$value" >> "$PARS2RAY_ENV_FILE"
   fi
@@ -115,15 +110,41 @@ prompt_secret() {
   done
 }
 
-configure_interactively() {
-  local admin_user admin_email admin_password panel_port public_host node_count key ip user pass port i
-  [[ "$PARS2RAY_FIRST_INSTALL" == "1" ]] || return 0
+configure_environment() {
+  if [[ ! -f "$PARS2RAY_ENV_FILE" ]]; then
+    cp "$PARS2RAY_INSTALL_DIR/.env.example" "$PARS2RAY_ENV_FILE"
+  else
+    cp "$PARS2RAY_ENV_FILE" "$PARS2RAY_ENV_FILE.backup.$(date -u +%Y%m%d%H%M%S)"
+  fi
+  chmod 600 "$PARS2RAY_ENV_FILE"
 
+  local postgres_password jwt_secret master_secret
+  postgres_password="$(read_env_value POSTGRES_PASSWORD)"
+  [[ -n "$postgres_password" && "$postgres_password" != replace-with-* ]] || postgres_password="${PARS2RAY_POSTGRES_PASSWORD:-$(random_hex)}"
+  jwt_secret="$(read_env_value JWT_SECRET)"
+  [[ -n "$jwt_secret" && "$jwt_secret" != replace-with-* ]] || jwt_secret="$(random_hex)"
+  master_secret="$(read_env_value MASTER_SECRET)"
+  [[ -n "$master_secret" && "$master_secret" != replace-with-* ]] || master_secret="$(random_hex)"
+
+  set_env_value POSTGRES_PASSWORD "$postgres_password"
+  set_env_value JWT_SECRET "$jwt_secret"
+  set_env_value MASTER_SECRET "$master_secret"
+  set_env_value ENVIRONMENT production
+  set_env_value DEBUG false
+  set_env_value DATABASE_URL 'postgresql+psycopg://pars2ray:${POSTGRES_PASSWORD}@db:5432/pars2ray'
+  set_env_value REDIS_URL 'redis://redis:6379/0'
+}
+
+configure_first_run() {
+  [[ "$PARS2RAY_FIRST_INSTALL" == "1" ]] || return 0
+  local admin_user admin_email admin_password panel_port public_host
   printf '\n=== Pars2Ray first-run setup ===\n'
-  printf 'You do NOT need to edit .env. This installer creates it automatically.\n\n'
+  printf 'You do NOT need to edit .env. Everything else is generated automatically.\n\n'
 
   admin_user="${PARS2RAY_ADMIN_USER:-$(prompt_value 'Panel username' 'admin')}"
+  [[ "$admin_user" =~ ^[A-Za-z0-9_.-]{3,64}$ ]] || die "Invalid panel username"
   admin_email="${PARS2RAY_ADMIN_EMAIL:-$(prompt_value 'Panel email' 'admin@example.com')}"
+  [[ "$admin_email" == *@*.* ]] || die "Invalid panel email"
   if [[ -n "${PARS2RAY_ADMIN_PASSWORD:-}" ]]; then
     admin_password="$PARS2RAY_ADMIN_PASSWORD"
   else
@@ -133,90 +154,32 @@ configure_interactively() {
 
   panel_port="${PARS2RAY_PANEL_PORT:-$(prompt_value 'Panel HTTP port' '8000')}"
   [[ "$panel_port" =~ ^[0-9]+$ ]] && (( panel_port >= 1 && panel_port <= 65535 )) || die "Invalid panel port"
-  public_host="${PARS2RAY_PUBLIC_HOST:-$(prompt_value 'Public host/IP' "$(hostname -I 2>/dev/null | awk '{print $1}')")}"
+  public_host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}') }"
+  public_host="${public_host// /}"
+  [[ -n "$public_host" ]] || public_host="localhost"
 
   set_env_value ADMIN_USER "$admin_user"
   set_env_value ADMIN_EMAIL "$admin_email"
   set_env_value ADMIN_PASSWORD "$admin_password"
   set_env_value PANEL_HTTP_PORT "$panel_port"
   set_env_value TRUSTED_HOSTS "localhost,127.0.0.1,${public_host}"
-
-  node_count="${PARS2RAY_NODE_COUNT:-$(prompt_value 'How many managed nodes do you have?' '0')}"
-  [[ "$node_count" =~ ^[0-9]+$ ]] || die "Node count must be a non-negative integer"
-
-  for ((i=1; i<=node_count; i++)); do
-    printf '\n--- Node %d/%d ---\n' "$i" "$node_count"
-    key="$(prompt_value 'Node key' "NODE${i}")"
-    key="$(printf '%s' "$key" | tr '[:lower:]-' '[:upper:]_')"
-    [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "Node key must contain only letters, numbers and underscores"
-    ip="$(prompt_value 'Node IP/hostname')"
-    [[ -n "$ip" ]] || die "Node IP/hostname is required"
-    user="$(prompt_value 'SSH username' 'root')"
-    port="$(prompt_value 'SSH port' '22')"
-    [[ "$port" =~ ^[0-9]+$ ]] || die "Invalid SSH port"
-    read -r -s -p "SSH password (leave empty if not required): " pass || true
-    printf '\n'
-
-    set_env_value "${key}_IP" "$ip"
-    set_env_value "${key}_USER" "$user"
-    set_env_value "${key}_PORT" "$port"
-    set_env_value "${key}_PASS" "$pass"
-  done
-}
-
-configure_environment() {
-  if [[ ! -f "$PARS2RAY_ENV_FILE" ]]; then
-    cp "$PARS2RAY_INSTALL_DIR/.env.example" "$PARS2RAY_ENV_FILE"
-  else
-    cp "$PARS2RAY_ENV_FILE" "$PARS2RAY_ENV_FILE.backup.$(date -u +%Y%m%d%H%M%S)"
-  fi
-  chmod 600 "$PARS2RAY_ENV_FILE"
-
-  local postgres_password jwt_secret master_secret admin_password current_host detected_host
-  postgres_password="$(read_env_value POSTGRES_PASSWORD)"
-  [[ -n "$postgres_password" && "$postgres_password" != replace-with-* ]] || postgres_password="${PARS2RAY_POSTGRES_PASSWORD:-$(random_hex)}"
-  jwt_secret="$(read_env_value JWT_SECRET)"
-  [[ -n "$jwt_secret" && "$jwt_secret" != replace-with-* ]] || jwt_secret="$(random_hex)"
-  master_secret="$(read_env_value MASTER_SECRET)"
-  [[ -n "$master_secret" && "$master_secret" != replace-with-* ]] || master_secret="$(random_hex)"
-  admin_password="$(read_env_value ADMIN_PASSWORD)"
-  if [[ -z "$admin_password" || "$admin_password" == replace-with-* ]]; then
-    admin_password="${PARS2RAY_ADMIN_PASSWORD:-$(random_hex)}"
-    PARS2RAY_GENERATED_ADMIN_PASSWORD=1
-  fi
-  [[ "${#admin_password}" -ge 12 ]] || die "Admin password must be at least 12 characters"
-
-  set_env_value POSTGRES_PASSWORD "$postgres_password"
-  set_env_value JWT_SECRET "$jwt_secret"
-  set_env_value MASTER_SECRET "$master_secret"
-  set_env_value ADMIN_PASSWORD "$admin_password"
-  set_env_value ENVIRONMENT production
-  set_env_value DEBUG false
-  set_env_value DATABASE_URL 'postgresql+psycopg://pars2ray:${POSTGRES_PASSWORD}@db:5432/pars2ray'
-  set_env_value REDIS_URL 'redis://redis:6379/0'
-
-  current_host="$(read_env_value TRUSTED_HOSTS)"
-  detected_host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
-  if [[ -z "$current_host" || "$current_host" == "localhost,127.0.0.1" || "$current_host" == "localhost,127.0.0.1,"* ]]; then
-    [[ -n "$detected_host" ]] && set_env_value TRUSTED_HOSTS "localhost,127.0.0.1,${detected_host}"
-  fi
 }
 
 start_and_verify() {
-  local port health_url attempt
+  local port health_url attempt compose_file="$PARS2RAY_INSTALL_DIR/deploy/docker-compose.yml"
   port="$(read_env_value PANEL_HTTP_PORT)"
   port="${port:-8000}"
-  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$PARS2RAY_INSTALL_DIR/deploy/docker-compose.yml" config >/dev/null
-  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$PARS2RAY_INSTALL_DIR/deploy/docker-compose.yml" up -d --build
+  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" config >/dev/null
+  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" up -d --build
   health_url="http://127.0.0.1:${port}/health"
-  for attempt in $(seq 1 45); do
+  for attempt in $(seq 1 60); do
     if curl -fsS --max-time 3 "$health_url" >/dev/null; then
       log "Master health check passed"
       return 0
     fi
     sleep 2
   done
-  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$PARS2RAY_INSTALL_DIR/deploy/docker-compose.yml" ps
+  "${PARS2RAY_COMPOSE[@]}" --env-file "$PARS2RAY_ENV_FILE" -f "$compose_file" ps
   die "Master did not become healthy. Inspect: cd $PARS2RAY_INSTALL_DIR && docker compose logs --tail=200 master"
 }
 
@@ -226,22 +189,24 @@ main() {
   ensure_docker
   checkout_project
   configure_environment
-  configure_interactively
+  configure_first_run
   start_and_verify
+
   panel_port="$(read_env_value PANEL_HTTP_PORT)"
   panel_port="${panel_port:-8000}"
   admin_user="$(read_env_value ADMIN_USER)"
   admin_user="${admin_user:-admin}"
-  public_host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
-  log "Pars2Ray is installed at $PARS2RAY_INSTALL_DIR"
-  log "Panel: http://${public_host}:${panel_port}"
-  log "Admin user: ${admin_user}"
-  if [[ "$PARS2RAY_GENERATED_ADMIN_PASSWORD" == "1" ]]; then
-    log "Generated admin password (store it now): $(read_env_value ADMIN_PASSWORD)"
-  else
-    log "Admin password configured during first-run setup"
-  fi
-  log "OpenAPI: http://${public_host}:${panel_port}/docs"
+  public_host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}') }"
+  public_host="${public_host// /}"
+  [[ -n "$public_host" ]] || public_host="localhost"
+
+  printf '\n========================================\n'
+  printf ' Pars2Ray is ready\n'
+  printf ' Panel: http://%s:%s\n' "$public_host" "$panel_port"
+  printf ' User:  %s\n' "$admin_user"
+  printf '========================================\n'
+  printf 'Manage Nodes from Panel -> Nodes -> Add Node.\n'
+  printf 'The installer never requires manual .env editing.\n\n'
 }
 
 main "$@"
