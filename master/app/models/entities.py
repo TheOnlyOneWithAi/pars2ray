@@ -56,7 +56,7 @@ class Permission(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(80), unique=True, index=True)
-    roles: Mapped[list[Role]] = relationship(secondary=role_permissions, back_populates="roles")
+    roles: Mapped[list[Role]] = relationship(secondary=role_permissions, back_populates="permissions")
 
 
 class Node(Base):
