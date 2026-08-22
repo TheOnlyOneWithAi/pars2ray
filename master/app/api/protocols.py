@@ -8,11 +8,12 @@ from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_roles
-from app.core.security import token_hash, utcnow
+from app.api.deps import current_user, require_roles
+from app.core.security import encrypt_secret, random_token, token_hash, utcnow
 from app.db.base import get_db
 from app.models.entities import Node, Plan, Route, Subscription, SystemSetting, User
 from app.schemas import ConfigBuildRequest, PanelDomainUpdate
@@ -49,15 +50,13 @@ def _subscription_rows(db: Session, token: str) -> tuple[Subscription, User] | N
     plan = db.get(Plan, sub.plan_id)
     quota_gb = max(float(plan.quota_gb if plan else 0), 0.0)
     used_gb = max(float(sub.used_gb or 0), 0.0)
-    # quota_gb == 0 is explicitly treated as unlimited. Otherwise a depleted
-    # subscription must stop serving configuration, not merely display 0 GB left.
     if quota_gb > 0 and used_gb >= quota_gb:
         return None
     return sub, user
 
 
 def _template(db: Session) -> str:
-    return _setting(db, "subscription.html", """<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{{title}}</title><style>body{font-family:system-ui;background:#0b1020;color:#fff;max-width:900px;margin:40px auto;padding:20px}a{color:#7dd3fc;word-break:break-all}pre{white-space:pre-wrap;background:#151b2e;padding:16px;border-radius:12px}.card{background:#151b2e;padding:18px;border-radius:14px;margin:14px 0}.muted{opacity:.75}.links a{display:block;margin:10px 0}</style></head><body><h1>{{title}}</h1><div class=\"card\"><p>User: {{username}}</p><p>Used: {{used_gb}} GB / {{quota_gb}} GB</p><p>Remaining: {{remaining_gb}} GB ({{remaining_percent}}%)</p><p>Expires: {{expires_at}}</p><p>Days remaining: {{days_remaining}}</p></div><div class=\"card\"><h2>Subscription</h2><p><a href=\"{{subscription_url}}\">{{subscription_url}}</a></p><p><a href=\"{{raw_url}}\">Raw configuration subscription</a></p></div><div class=\"card links\"><h2>VLESS / Configurations</h2>{{vless_links}}</div><div class=\"card\"><h2>Connection instructions</h2>{{connection_instructions}}</div><div class=\"card\"><h2>All configurations</h2><pre>{{configs}}</pre></div></body></html>""")
+    return _setting(db, "subscription.html", """<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{{title}}</title><style>body{font-family:system-ui;background:#0b1020;color:#fff;max-width:900px;margin:40px auto;padding:20px}a{color:#7dd3fc;word-break:break-all}pre{white-space:pre-wrap;background:#151b2e;padding:16px;border-radius:12px}.card{background:#151b2e;padding:18px;border-radius:14px;margin:14px 0}.muted{opacity:.75}.links a{display:block;margin:10px 0}</style></head><body><h1>{{title}}</h1><div class=\"card\"><p>User: {{username}}</p><p>Used: {{used_gb}} GB / {{quota_gb}} GB</p><p>Remaining: {{remaining_gb}} GB ({{remaining_percent}}%)</p><p>Expires: {{expires_at}}</p><p>Days remaining: {{days_remaining}}</p></div><div class=\"card\"><h2>Subscription</h2><p><a href=\"{{subscription_url}}\">{{subscription_url}}</a></p><p><a href=\"{{raw_url}}\">Raw configuration subscription</a></p></div><div class=\"card links\"><h2>Configurations</h2>{{vless_links}}</div><div class=\"card\"><h2>Connection instructions</h2>{{connection_instructions}}</div><div class=\"card\"><h2>All configurations</h2><pre>{{configs}}</pre></div></body></html>""")
 
 
 def _render(template: str, values: dict[str, str]) -> str:
@@ -73,7 +72,22 @@ def _routes_for_subscription(db: Session, sub: Subscription) -> list[Route]:
     return [route for route in routes if not allowed or allowed.intersection(route.node_keys)]
 
 
+def _custom_lines(sub: Subscription) -> list[str]:
+    if not sub.config_enc:
+        return []
+    try:
+        from app.core.security import decrypt_secret
+        data = json.loads(decrypt_secret(sub.config_enc))
+        links = data.get("links", []) if isinstance(data, dict) else []
+        return [str(link).strip() for link in links if isinstance(link, str) and "://" in link]
+    except Exception:
+        return []
+
+
 def _connection_lines(db: Session, sub: Subscription, token: str) -> list[str]:
+    custom = _custom_lines(sub)
+    if custom:
+        return custom
     lines: list[str] = []
     client_id = _client_id(token_hash(token))
     for route in _routes_for_subscription(db, sub):
@@ -122,7 +136,42 @@ def _subscription_html_links(lines: list[str]) -> str:
 
 
 def _connection_instructions_html() -> str:
-    return "<ol><li>Copy the subscription link and add it to your V2Ray/Xray client as a subscription URL.</li><li>Alternatively, copy an individual VLESS link above and import it as a single profile.</li><li>After importing, refresh/update the subscription in your client whenever the server configuration changes.</li><li>Keep this subscription URL private because it grants access to your configurations.</li></ol>"
+    return "<ol><li>Copy the subscription link and add it to your Xray/V2Ray compatible client as a subscription URL.</li><li>Alternatively, copy an individual connection link above and import it as a single profile.</li><li>Refresh the subscription whenever configurations change.</li><li>Keep this URL private because it grants access to your configurations.</li></ol>"
+
+
+class CustomConfigRequest(BaseModel):
+    subscription_id: int = Field(ge=1)
+    protocol: str = Field(pattern="^(vless|vmess|shadowsocks)$")
+    links: list[str] = Field(min_length=1, max_length=100)
+    replace: bool = True
+
+
+@router.post("/custom-configs", tags=["custom-configs"])
+def create_custom_config(payload: CustomConfigRequest, request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
+    sub = db.get(Subscription, payload.subscription_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="subscription_not_found")
+    if user.role not in {"SUPER_ADMIN", "ADMIN"} and sub.user_id != user.id:
+        raise HTTPException(status_code=403, detail="forbidden")
+    cleaned = [link.strip() for link in payload.links if isinstance(link, str) and "://" in link and len(link) <= 8192]
+    if not cleaned:
+        raise HTTPException(status_code=422, detail="valid_connection_links_required")
+    if not payload.replace:
+        cleaned = _custom_lines(sub) + cleaned
+    if len(cleaned) > 100:
+        raise HTTPException(status_code=422, detail="too_many_configs")
+    raw_token = random_token(48)
+    sub.token_hash = token_hash(raw_token)
+    sub.token_enc = encrypt_secret(raw_token)
+    sub.config_enc = encrypt_secret(json.dumps({"protocol": payload.protocol, "links": cleaned}, separators=(",", ":")))
+    from app.services.audit import record
+    record(db, user, "subscription.custom_config", "subscription", str(sub.id), request.client.host if request.client else "", {"protocol": payload.protocol, "count": len(cleaned)})
+    db.commit()
+    scheme = request.url.scheme
+    host = request.headers.get("host") or request.url.netloc
+    link = f"{scheme}://{host}/link/{raw_token}"
+    raw_link = f"{link}/raw"
+    return {"ok": True, "subscription_id": sub.id, "protocol": payload.protocol, "config_count": len(cleaned), "subscription_url": link, "raw_url": raw_link, "message": "inbound_free_config_saved"}
 
 
 @router.post("/routes/{route_id}/build-config")
@@ -164,7 +213,6 @@ def update_panel_domain(payload: PanelDomainUpdate, db: Session = Depends(get_db
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not result.get("ok"):
         raise HTTPException(status_code=502, detail=result)
-    from app.core.security import encrypt_secret
     values = {"panel.domain": payload.domain.strip().lower().rstrip("."), "panel.tls": str(payload.tls).lower(), "panel.tls.email": payload.email or ""}
     for key, value in values.items():
         row = db.scalar(select(SystemSetting).where(SystemSetting.key == key))
@@ -183,7 +231,6 @@ def update_subscription_html(payload: dict, db: Session = Depends(get_db), user:
         raise HTTPException(status_code=422, detail="html_required")
     if len(template) > 100000:
         raise HTTPException(status_code=413, detail="html_too_large")
-    from app.core.security import encrypt_secret
     row = db.scalar(select(SystemSetting).where(SystemSetting.key == "subscription.html"))
     if not row:
         db.add(SystemSetting(key="subscription.html", value_enc=encrypt_secret(template), is_secret=False))
@@ -199,6 +246,7 @@ def get_subscription_html(db: Session = Depends(get_db), user: User = Depends(re
 
 
 @public_router.get("/sub/{token}", response_class=HTMLResponse, include_in_schema=False)
+@public_router.get("/link/{token}", response_class=HTMLResponse, include_in_schema=False)
 def subscription_page(token: str, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     found = _subscription_rows(db, token)
     if not found:
@@ -215,27 +263,12 @@ def subscription_page(token: str, request: Request, db: Session = Depends(get_db
     days_remaining = max((sub.expires_at - now).days, 0)
     subscription_url = str(request.url)
     raw_url = subscription_url.rstrip("/") + "/raw"
-    values = {
-        "title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")),
-        "username": html.escape(user.username),
-        "expires_at": html.escape(sub.expires_at.isoformat()),
-        "token": html.escape(token),
-        "subscription_url": html.escape(subscription_url, quote=True),
-        "raw_url": html.escape(raw_url, quote=True),
-        "configs": html.escape("\n".join(lines)),
-        "config_count": str(len(lines)),
-        "used_gb": f"{used_gb:.2f}",
-        "quota_gb": "Unlimited" if unlimited else f"{quota_gb:.2f}",
-        "remaining_gb": "Unlimited" if unlimited else f"{remaining_gb:.2f}",
-        "remaining_percent": "100" if unlimited else f"{remaining_percent:.1f}",
-        "days_remaining": str(days_remaining),
-        "vless_links": _subscription_html_links([line for line in lines if line.startswith("vless://")]),
-        "connection_instructions": _connection_instructions_html(),
-    }
+    values = {"title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")), "username": html.escape(user.username), "expires_at": html.escape(sub.expires_at.isoformat()), "token": html.escape(token), "subscription_url": html.escape(subscription_url, quote=True), "raw_url": html.escape(raw_url, quote=True), "configs": html.escape("\n".join(lines)), "config_count": str(len(lines)), "used_gb": f"{used_gb:.2f}", "quota_gb": "Unlimited" if unlimited else f"{quota_gb:.2f}", "remaining_gb": "Unlimited" if unlimited else f"{remaining_gb:.2f}", "remaining_percent": "100" if unlimited else f"{remaining_percent:.1f}", "days_remaining": str(days_remaining), "vless_links": _subscription_html_links(lines), "connection_instructions": _connection_instructions_html()}
     return HTMLResponse(_render(_template(db), values))
 
 
 @public_router.get("/sub/{token}/raw", response_class=PlainTextResponse, include_in_schema=False)
+@public_router.get("/link/{token}/raw", response_class=PlainTextResponse, include_in_schema=False)
 def subscription_raw(token: str, db: Session = Depends(get_db)) -> PlainTextResponse:
     found = _subscription_rows(db, token)
     if not found:
