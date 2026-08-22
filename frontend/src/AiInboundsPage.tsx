@@ -6,7 +6,7 @@ type Candidate={candidate_id:string;path:string[];core:string;protocol:string;tr
 
 export function AiInboundsPage({t,notify}:{t:T;notify:(message:string,kind?:'success'|'error')=>void}){
  const [items,setItems]=useState<Candidate[]>([]);const [selected,setSelected]=useState<Candidate|null>(null);const [name,setName]=useState('');const [loading,setLoading]=useState(false)
- async function load(){setLoading(true);try{const r=await api.aiInboundRecommendations(12);setItems(r.candidates)}catch(e){notify(e instanceof Error?e.message:t('failed'),'error')}finally{setLoading(false)}}
+ async function load(){setLoading(true);try{const r=await api.aiInboundRecommendations(12);setItems(r.candidates as Candidate[])}catch(e){notify(e instanceof Error?e.message:t('failed'),'error')}finally{setLoading(false)}}
  useEffect(()=>{void load()},[])
  async function choose(){if(!selected)return;try{await api.selectAiInbound({candidate_id:selected.candidate_id,node_key:selected.node.node_key,core:selected.core,protocol:selected.protocol,transport:selected.transport,port:443,security:'reality',name:name.trim()||`${selected.protocol}-${selected.node.node_key}`,config:{security:'reality',server_name:'www.cloudflare.com',reality:{fingerprint:'chrome'}}});notify('Inbound created and applied to node');setSelected(null);setName('');await load()}catch(e){notify(e instanceof Error?e.message:t('failed'),'error')}}
  return <Panel title="AI Inbounds" eyebrow="AI GENERATED · OPERATOR SELECTS" className="page-panel" action={<button className="button ghost" onClick={()=>void load()}><Icon name="refresh" size={15}/>Refresh</button>}>
