@@ -165,18 +165,37 @@ def _all_links(db: Session, sub: Subscription, user: User) -> list[str]:
 
 
 def _html_template(db: Session) -> str:
-    return _setting(db, "subscription.html", """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{title}}</title><style>body{font-family:system-ui;max-width:900px;margin:40px auto;padding:20px;background:#0b1020;color:#fff}a{color:#7dd3fc;word-break:break-all}.card{background:#151b2e;padding:18px;border-radius:14px;margin:14px 0}pre{white-space:pre-wrap}</style></head><body><h1>{{title}}</h1><div class="card"><p>User: {{username}}</p><p>Traffic: {{used_gb}} / {{quota_gb}}</p><p>Expires: {{expires_at}}</p><p>Subscription: <a href="{{subscription_url}}">{{subscription_url}}</a></p></div><div class="card"><h2>Configurations</h2>{{configs_html}}</div></body></html>""")
+    return _setting(db, "subscription.html", """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{title}}</title><style>body{font-family:system-ui;max-width:900px;margin:40px auto;padding:20px;background:#0b1020;color:#fff}a{color:#7dd3fc;word-break:break-all}.card{background:#151b2e;padding:18px;border-radius:14px;margin:14px 0}pre{white-space:pre-wrap}</style></head><body><h1>{{title}}</h1><div class="card"><p>User: {{username}}</p><p>Used: {{used_gb}} / {{quota_gb}}</p><p>Remaining: {{remaining_gb}} GB ({{remaining_percent}}%)</p><p>Expires: {{expires_at}}</p><p>Days remaining: {{days_remaining}}</p></div><div class="card"><h2>Subscription</h2><p><a href="{{subscription_url}}">{{subscription_url}}</a></p><p><a href="{{raw_url}}">Raw configuration subscription</a></p></div><div class="card"><h2>VLESS / Configurations</h2><pre>{{vless_links}}</pre></div><div class="card"><h2>Connection instructions</h2><p>{{connection_instructions}}</p></div><div class="card"><h2>All configurations</h2><pre>{{configs}}</pre></div></body></html>""")
 
 
 def _html_response(username: str, request: Request, db: Session, sub: Subscription, user: User, links: list[str]) -> HTMLResponse:
     expires_at = sub.expires_at or user.expires_at
     quota = max(float(user.quota_gb or 0), 0.0)
     used = max(float(user.used_gb or sub.used_gb or 0), 0.0)
-    quota_text = "Unlimited" if quota <= 0 else f"{quota:.2f} GB"
+    unlimited = quota <= 0
+    remaining = max(quota - used, 0.0) if not unlimited else 0.0
+    remaining_percent = 100.0 if unlimited else (remaining / quota * 100.0 if quota else 0.0)
+    days_remaining = max((expires_at - utcnow()).total_seconds() / 86400.0, 0.0) if expires_at else None
     expires_text = expires_at.isoformat() if expires_at else "Unlimited"
     subscription_url = f"{_public_subscription_base(request, db)}{quote(username, safe='')}"
-    configs_html = "".join(f'<a href="{html.escape(link, quote=True)}">{html.escape(link)}</a><br>' for link in links) or "<p>No active configurations.</p>"
-    values = {"title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")), "username": html.escape(user.username), "used_gb": f"{used:.2f} GB", "quota_gb": quota_text, "expires_at": html.escape(expires_text), "subscription_url": html.escape(subscription_url, quote=True), "configs_html": configs_html}
+    raw_url = f"{subscription_url}/raw"
+    escaped_links = "\n".join(html.escape(link) for link in links) or "No active configurations."
+    instructions = "Copy the subscription URL into your client. The raw URL returns newline-separated configurations."
+    values = {
+        "title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")),
+        "username": html.escape(user.username),
+        "used_gb": f"{used:.2f} GB",
+        "quota_gb": "Unlimited" if unlimited else f"{quota:.2f} GB",
+        "remaining_gb": "Unlimited" if unlimited else f"{remaining:.2f}",
+        "remaining_percent": "100" if unlimited else f"{remaining_percent:.1f}",
+        "expires_at": html.escape(expires_text),
+        "days_remaining": "Unlimited" if days_remaining is None else f"{days_remaining:.1f}",
+        "subscription_url": html.escape(subscription_url, quote=True),
+        "raw_url": html.escape(raw_url, quote=True),
+        "vless_links": escaped_links,
+        "connection_instructions": html.escape(instructions),
+        "configs": escaped_links,
+    }
     rendered = _html_template(db)
     for key, value in values.items():
         rendered = rendered.replace("{{" + key + "}}", value)
