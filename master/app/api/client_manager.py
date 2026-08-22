@@ -48,6 +48,8 @@ def _effective_quota(user: User | None, client: Subscription, plan: Plan | None)
 
 
 def _effective_expiry(user: User | None, client: Subscription):
+    if client.plan_id is not None:
+        return client.expires_at
     return client.expires_at if client.expires_at is not None else (user.expires_at if user is not None else None)
 
 
@@ -83,7 +85,7 @@ def _resolve_expiry(payload: ClientCreate, target: User, plan: Plan | None):
     if days is None and plan is not None:
         days = plan.duration_days
     if days is None:
-        return target.expires_at
+        return target.expires_at if plan is None else None
     return utcnow() + timedelta(days=days) if days > 0 else None
 
 
