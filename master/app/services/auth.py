@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -31,10 +31,6 @@ def ensure_seed(db: Session) -> None:
         admin.roles = [roles["SUPER_ADMIN"]]
         db.add(admin)
     else:
-        # The installer/SSH CLI persists the canonical admin password in
-        # ADMIN_PASSWORD before restarting the master. Keep the runtime DB
-        # synchronized with that value so the process and CLI cannot drift
-        # to different credentials after a restart.
         if settings.admin_password and not verify_password(settings.admin_password, admin.password_hash):
             admin.password_hash = hash_password(settings.admin_password)
         if admin.email != settings.admin_email:
@@ -62,12 +58,43 @@ def issue_tokens(db: Session, user: User) -> tuple[str, str, int]:
 
 
 def rotate_refresh(db: Session, raw_refresh: str) -> tuple[User, str, str, int] | None:
-    stored = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash(raw_refresh), RefreshToken.revoked_at.is_(None)))
-    if not stored or stored.expires_at <= utcnow():
+    now = utcnow()
+    token_digest = token_hash(raw_refresh)
+    revoked = db.execute(
+        update(RefreshToken)
+        .where(
+            RefreshToken.token_hash == token_digest,
+            RefreshToken.revoked_at.is_(None),
+            RefreshToken.expires_at > now,
+        )
+        .values(revoked_at=now)
+    )
+    if revoked.rowcount != 1:
+        db.rollback()
+        return None
+
+    stored = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_digest))
+    if not stored:
+        db.rollback()
         return None
     user = db.get(User, stored.user_id)
     if not user or not user.is_active:
+        db.rollback()
         return None
-    stored.revoked_at = utcnow()
-    access, refresh, ttl = issue_tokens(db, user)
+
+    access, ttl = create_access_token(user.username, user.role)
+    refresh = random_token()
+    db.add(
+        RefreshToken(
+            user_id=user.id,
+            token_hash=token_hash(refresh),
+            expires_at=now + timedelta(days=settings.refresh_token_days),
+        )
+    )
+    user.last_login_at = now
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return user, access, refresh, ttl
