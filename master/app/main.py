@@ -18,6 +18,7 @@ from app.api.inbounds import router as inbounds_router
 from app.api.routes import router
 from app.api.protocols import public_router, router as protocols_router
 from app.api.subscription_server import public_router as subscription_public_router, router as subscription_router
+from app.api.secure_subscription import public_router as secure_subscription_public_router
 from app.api.ai_settings import router as ai_settings_router
 from app.api.node_management import router as node_management_router
 from app.api.xray_management import router as xray_management_router
@@ -29,11 +30,7 @@ from app.services.rate_limit import enforce
 from app.services.scheduler import start_scheduler, stop_scheduler
 
 LEGACY_DISABLED_PREFIXES = (
-    "/api/v1/plans",
-    "/api/v1/routes",
-    "/api/v1/experiments",
-    "/api/v1/optimizer",
-    "/api/v1/ai/configure-node",
+    "/api/v1/plans", "/api/v1/routes", "/api/v1/experiments", "/api/v1/optimizer", "/api/v1/ai/configure-node",
 )
 
 
@@ -75,8 +72,8 @@ async def security_and_rate_limit(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    if request.url.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store"
+    if request.url.path.startswith("/api/") or request.url.path.startswith("/s/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
     elif request.url.path.startswith("/assets/"):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     else:
@@ -108,6 +105,7 @@ app.include_router(subscription_router)
 app.include_router(router)
 app.include_router(protocols_router)
 app.include_router(subscription_public_router)
+app.include_router(secure_subscription_public_router)
 app.include_router(public_router)
 app.include_router(node_management_router)
 app.include_router(xray_management_router)
