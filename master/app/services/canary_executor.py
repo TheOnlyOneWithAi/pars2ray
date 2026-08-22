@@ -28,11 +28,7 @@ def _find_candidate(db, candidate_id: str) -> Route | None:
 
 
 async def execute_canary(candidate_id: str) -> dict:
-    """Run one guarded canary and promote only after deterministic gates pass.
-
-    Auto mutation is opt-in through PARS2RAY_CANARY_AUTO_APPLY. With the default
-    value false this service evaluates no node state and never changes production.
-    """
+    """Run one guarded canary and promote only after deterministic gates pass."""
     if not getattr(settings, "canary_auto_apply", False):
         return {"action": "DRY_RUN", "candidate_id": candidate_id, "reason": "Canary auto-apply is disabled."}
 
@@ -42,19 +38,29 @@ async def execute_canary(candidate_id: str) -> dict:
         candidate = _find_candidate(db, candidate_id)
         if not candidate:
             raise CanaryExecutionError("candidate route not found")
-        if not candidate.node_keys:
+        candidate_keys = list(dict.fromkeys(str(key).strip() for key in (candidate.node_keys or []) if str(key).strip()))
+        if not candidate_keys:
             raise CanaryExecutionError("candidate has no nodes")
 
-        active = db.scalar(select(Route).where(Route.is_active.is_(True)).limit(1))
-        if not active or active.id == candidate.id:
-            raise CanaryExecutionError("candidate must differ from an active route")
+        active_routes = db.scalars(select(Route).where(Route.is_active.is_(True))).all()
+        if len(active_routes) != 1:
+            raise CanaryExecutionError("expected exactly one active route")
+        active = active_routes[0]
+        if active.id == candidate.id:
+            raise CanaryExecutionError("candidate must differ from active route")
 
-        nodes = db.scalars(select(Node).where(Node.node_key.in_(candidate.node_keys), Node.status == "ONLINE")).all()
-        if not nodes:
-            raise CanaryExecutionError("no online candidate nodes")
+        nodes = db.scalars(select(Node).where(Node.node_key.in_(candidate_keys))).all()
+        by_key = {node.node_key: node for node in nodes}
+        missing = [key for key in candidate_keys if key not in by_key]
+        offline = [key for key in candidate_keys if key in by_key and by_key[key].status != "ONLINE"]
+        if missing:
+            raise CanaryExecutionError(f"candidate_nodes_missing:{','.join(missing)}")
+        if offline:
+            raise CanaryExecutionError(f"candidate_nodes_not_online:{','.join(offline)}")
+        nodes = [by_key[key] for key in candidate_keys]
 
-        node = nodes[0]
         config = decrypt_secret(candidate.config_enc)
+        node = nodes[0]
         await agent_client.apply_config(node, {"config": config, "mode": "CANARY"})
         applied_nodes.append(node)
 
@@ -71,12 +77,11 @@ async def execute_canary(candidate_id: str) -> dict:
         policy = ExperimentPolicy(min_improvement=settings.ai_switch_min_improvement, required_wins=settings.ai_required_wins)
         result = CanaryRunner(policy).evaluate(active.score, observation, candidate.consecutive_wins + 1)
 
-        db.add(Experiment(candidate_id=str(candidate.id), route_hash=str(candidate.id), config_hash=str(candidate.id), node_keys=list(candidate.node_keys), core=candidate.core, protocol=candidate.protocol, transport=candidate.transport, score=observation.score, latency_ms=observation.latency_ms, jitter_ms=observation.jitter_ms, packet_loss_percent=observation.packet_loss_percent, throughput_mbps=observation.throughput_mbps, stability_percent=observation.stability_percent, level="CANARY", decision=result.action, metadata_json={"availability_percent": observation.availability_percent}))
+        db.add(Experiment(candidate_id=str(candidate.id), route_hash=str(candidate.id), config_hash=str(candidate.id), node_keys=candidate_keys, core=candidate.core, protocol=candidate.protocol, transport=candidate.transport, score=observation.score, latency_ms=observation.latency_ms, jitter_ms=observation.jitter_ms, throughput_mbps=observation.throughput_mbps, packet_loss_percent=observation.packet_loss_percent, stability_percent=observation.stability_percent, level="CANARY", decision=result.action, metadata_json={"availability_percent": observation.availability_percent}))
 
         if result.action != "PROMOTE":
             await agent_client.rollback(node)
             applied_nodes.clear()
-            # Preserve successful canary streaks; unsafe/failed observations reset it.
             candidate.consecutive_wins = candidate.consecutive_wins + 1 if result.action == "CANARY" else 0
             if result.action == "CANARY":
                 candidate.score = result.score
