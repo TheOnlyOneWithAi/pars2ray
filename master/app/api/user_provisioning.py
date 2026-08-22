@@ -52,10 +52,11 @@ def create_user_with_subscription(
     if expires_at is not None and expires_at <= utcnow():
         raise HTTPException(status_code=422, detail="expires_at_must_be_future")
 
+    generated_password = random_token(32)
     user = User(
         username=payload.username,
         email=payload.email,
-        password_hash=hash_password(payload.password),
+        password_hash=hash_password(payload.password or generated_password),
         is_active=payload.is_active,
         quota_gb=effective_quota,
         used_gb=0,
@@ -100,5 +101,5 @@ def create_user_with_subscription(
         quota_gb=float(user.quota_gb),
         used_gb=float(user.used_gb),
         expires_at=user.expires_at,
-        subscription_token=raw_token,
+        subscription_token=None,
     )
