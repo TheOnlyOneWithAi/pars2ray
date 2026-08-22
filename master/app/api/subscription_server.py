@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import current_user, require_roles
+from app.api.deps import require_roles
 from app.core.security import decrypt_secret, encrypt_secret, utcnow
 from app.db.base import get_db
 from app.models.entities import Node, Route, Subscription, SystemSetting, User
