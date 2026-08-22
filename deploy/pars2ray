@@ -2,21 +2,96 @@
 set -Eeuo pipefail
 
 INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
-COMPOSE_FILE="$INSTALL_DIR/deploy/docker-compose.yml"
-ENV_FILE="$INSTALL_DIR/.env"
+ENV_FILE="/etc/pars2ray/pars2ray.env"
+CREDENTIALS_FILE="/etc/pars2ray/credentials"
 
 fail(){ echo "[pars2ray] ERROR: $*" >&2; exit 1; }
 [[ -d "$INSTALL_DIR" ]] || fail "Pars2Ray is not installed at $INSTALL_DIR"
-[[ -f "$COMPOSE_FILE" ]] || fail "Compose file not found: $COMPOSE_FILE"
 
-compose(){
-  if docker compose version >/dev/null 2>&1; then
-    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
-  elif command -v docker-compose >/dev/null 2>&1; then
-    docker-compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
-  else
-    fail "Docker Compose is not installed"
+systemctl_cmd(){ command -v systemctl >/dev/null 2>&1 || fail "systemctl is required"; systemctl "$@"; }
+
+change_password(){
+  [[ -r "$ENV_FILE" ]] || fail "Pars2Ray environment file not found: $ENV_FILE"
+  [[ -x "$INSTALL_DIR/.venv/bin/python" ]] || fail "Pars2Ray Python environment not found"
+
+  local user="${PARS2RAY_ADMIN_USER:-}" password confirm
+  if [[ -z "$user" ]]; then
+    user="$(awk -F= '$1=="ADMIN_USER"{print substr($0,index($0,"=")+1); exit}' "$ENV_FILE")"
   fi
+  [[ -n "$user" ]] || fail "ADMIN_USER is not configured"
+
+  if [[ -n "${PARS2RAY_NEW_PASSWORD:-}" ]]; then
+    password="$PARS2RAY_NEW_PASSWORD"
+  else
+    while :; do
+      read -r -s -p "New Pars2Ray panel password for ${user} (12+ chars): " password || true
+      printf '\n'
+      (( ${#password} >= 12 )) || { echo "[pars2ray] Password must be at least 12 characters." >&2; continue; }
+      read -r -s -p "Confirm new password: " confirm || true
+      printf '\n'
+      [[ "$password" == "$confirm" ]] || { echo "[pars2ray] Passwords do not match." >&2; continue; }
+      break
+    done
+  fi
+  (( ${#password} >= 12 )) || fail "Password must be at least 12 characters"
+
+  echo "[pars2ray] Updating the panel password..."
+  if ! PARS2RAY_NEW_PASSWORD="$password" PARS2RAY_TARGET_USER="$user" PARS2RAY_INSTALL_DIR="$INSTALL_DIR" "$INSTALL_DIR/.venv/bin/python" - <<'PY'
+import os
+from datetime import datetime, timezone
+from sqlalchemy import select
+from app.core.security import hash_password
+from app.db.base import SessionLocal
+from app.models.entities import RefreshToken, User
+
+username = os.environ["PARS2RAY_TARGET_USER"]
+password = os.environ["PARS2RAY_NEW_PASSWORD"]
+
+db = SessionLocal()
+try:
+    user = db.scalar(select(User).where(User.username == username))
+    if user is None:
+        raise SystemExit(f"User not found: {username}")
+    user.password_hash = hash_password(password)
+    for token in db.scalars(select(RefreshToken).where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))).all():
+        token.revoked_at = datetime.now(timezone.utc)
+    db.commit()
+finally:
+    db.close()
+PY
+  then
+    fail "Database password update failed"
+  fi
+
+  # Keep installer state synchronized; never print the password.
+  local tmp="${ENV_FILE}.tmp.$$"
+  awk -v v="$password" 'BEGIN{done=0} /^ADMIN_PASSWORD=/{if(!done){print "ADMIN_PASSWORD=" v;done=1};next} {print} END{if(!done)print "ADMIN_PASSWORD=" v}' "$ENV_FILE" > "$tmp"
+  chmod 0600 "$tmp"
+  mv -f "$tmp" "$ENV_FILE"
+
+  if [[ -f "$CREDENTIALS_FILE" ]]; then
+    local panel_line host port
+    panel_line="$(grep '^Panel: ' "$CREDENTIALS_FILE" || true)"
+    host="$(printf '%s\n' "$panel_line" | sed -n 's#^Panel: http://\([^:]*\):.*#\1#p')"
+    port="$(printf '%s\n' "$panel_line" | sed -n 's#^Panel: .*:\([0-9][0-9]*\)$#\1#p')"
+    host="${host:-localhost}"
+    port="${port:-$(awk -F= '$1=="PANEL_HTTP_PORT"{print $2;exit}' "$ENV_FILE") }"
+    port="${port// /}"
+    cat > "$CREDENTIALS_FILE" <<EOF
+Pars2Ray installation
+=====================
+Panel: http://${host}:${port}
+Username: ${user}
+Password: ${password}
+
+Keep this file private. It is readable only by root.
+EOF
+    chmod 0600 "$CREDENTIALS_FILE"
+  fi
+
+  systemctl_cmd restart pars2ray-master.service
+  systemctl_cmd restart pars2ray-worker.service
+  echo "[pars2ray] Panel password changed successfully. Existing refresh sessions were revoked."
 }
 
 case "${1:-help}" in
@@ -26,46 +101,47 @@ case "${1:-help}" in
   update)
     git -C "$INSTALL_DIR" fetch --depth 1 origin main
     git -C "$INSTALL_DIR" reset --hard origin/main
-    compose build --pull master
-    compose up -d --force-recreate
-    compose ps
+    systemctl_cmd daemon-reload
+    systemctl_cmd restart pars2ray-master.service pars2ray-worker.service
     ;;
   start)
-    compose up -d
-    compose ps
+    systemctl_cmd start pars2ray-master.service pars2ray-worker.service
     ;;
   stop)
-    compose stop
+    systemctl_cmd stop pars2ray-worker.service pars2ray-master.service
     ;;
   restart)
-    compose restart
-    compose ps
+    systemctl_cmd restart pars2ray-master.service pars2ray-worker.service
     ;;
   status|ps)
-    compose ps
+    systemctl_cmd --no-pager --full status pars2ray-master.service pars2ray-worker.service
     ;;
   logs)
-    shift || true
-    compose logs --tail="${PARS2RAY_LOG_LINES:-150}" "$@"
+    journalctl -u pars2ray-master.service -u pars2ray-worker.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}"
     ;;
   master-logs)
-    compose logs --tail="${PARS2RAY_LOG_LINES:-150}" master
+    journalctl -u pars2ray-master.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}"
     ;;
   worker-logs)
-    compose logs --tail="${PARS2RAY_LOG_LINES:-150}" worker
+    journalctl -u pars2ray-worker.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}"
+    ;;
+  change-password|password)
+    change_password
     ;;
   shell)
     exec bash
     ;;
   config)
-    compose config
+    [[ -r "$ENV_FILE" ]] || fail "Environment file not found: $ENV_FILE"
+    sed -E 's/^(ADMIN_PASSWORD|JWT_SECRET|MASTER_SECRET)=.*/\1=***REDACTED***/' "$ENV_FILE"
     ;;
   uninstall)
-    read -r -p "Remove Pars2Ray containers and volumes? [y/N] " answer
+    read -r -p "Remove Pars2Ray services and data? [y/N] " answer
     [[ "$answer" =~ ^[Yy]$ ]] || exit 0
-    compose down -v --remove-orphans
-    rm -f /usr/local/bin/pars2ray
-    echo "[pars2ray] Removed. The project files remain in $INSTALL_DIR."
+    systemctl_cmd disable --now pars2ray-worker.service pars2ray-master.service 2>/dev/null || true
+    rm -f /etc/systemd/system/pars2ray-master.service /etc/systemd/system/pars2ray-worker.service /usr/local/bin/pars2ray
+    systemctl_cmd daemon-reload
+    echo "[pars2ray] Services removed. The project files remain in $INSTALL_DIR."
     ;;
   help|-h|--help)
     cat <<'EOF'
@@ -73,22 +149,24 @@ Pars2Ray management CLI
 
 Usage: pars2ray <command>
 
-  install       Run the installer / repair an installation
-  update        Pull latest main and recreate the stack
-  start         Start Pars2Ray
-  stop          Stop Pars2Ray
-  restart       Restart Pars2Ray
-  status        Show container status
-  logs          Show all service logs
-  master-logs   Show master logs
-  worker-logs   Show worker logs
-  config        Validate and print Compose configuration
-  uninstall     Remove containers and data volumes (with confirmation)
-  help          Show this help
+  install            Run the native installer / repair an installation
+  update             Pull latest main and restart native services
+  start              Start Pars2Ray services
+  stop               Stop Pars2Ray services
+  restart            Restart Pars2Ray services
+  status             Show native service status
+  logs               Show master + worker logs
+  master-logs        Show master logs
+  worker-logs        Show worker logs
+  change-password    Change the panel login password from SSH
+  password           Alias for change-password
+  config             Show runtime configuration with secrets redacted
+  shell              Open a root shell
+  uninstall          Remove Pars2Ray services (keeps project files)
+  help               Show this help
 
-First installation is intentionally interactive: the installer generates
-runtime secrets and asks only for the panel account and port. No .env editing
-is required.
+Password changes update the database securely, revoke existing refresh
+sessions, update installer credentials, and restart the services.
 EOF
     ;;
   *)
