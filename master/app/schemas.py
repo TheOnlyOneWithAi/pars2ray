@@ -44,6 +44,9 @@ class UserUpdate(BaseModel):
     email: str | None = Field(default=None, max_length=254)
     role: Literal["SUPER_ADMIN", "ADMIN", "OPERATOR", "RESELLER", "USER"] | None = None
     is_active: bool | None = None
+    quota_gb: float | None = Field(default=None, ge=0)
+    duration_days: int | None = Field(default=None, ge=0, le=36500)
+    expires_at: datetime | None = None
 
 
 class UserOut(ORMModel):
@@ -193,18 +196,20 @@ class PlanOut(ORMModel):
 class SubscriptionOut(ORMModel):
     id: int
     user_id: int
-    plan_id: int
+    plan_id: int | None
     node_keys: list[str]
     enabled: bool
     used_gb: float
-    expires_at: datetime
+    expires_at: datetime | None
     created_at: datetime
 
 
 class ClientCreate(BaseModel):
-    user_id: int = Field(ge=1)
-    plan_id: int = Field(ge=1)
+    user_id: int = Field(gt=0)
+    plan_id: int | None = Field(default=None, ge=1)
     node_keys: list[str] = Field(default_factory=list, max_length=20)
+    quota_gb: float | None = Field(default=None, ge=0)
+    duration_days: int | None = Field(default=None, ge=0, le=36500)
     expires_at: datetime | None = None
     single_active: bool = True
 
@@ -212,6 +217,8 @@ class ClientCreate(BaseModel):
 class ClientUpdate(BaseModel):
     plan_id: int | None = Field(default=None, ge=1)
     node_keys: list[str] | None = Field(default=None, max_length=20)
+    quota_gb: float | None = Field(default=None, ge=0)
+    duration_days: int | None = Field(default=None, ge=0, le=36500)
     enabled: bool | None = None
     expires_at: datetime | None = None
 
@@ -220,14 +227,14 @@ class ClientOut(BaseModel):
     id: int
     user_id: int
     username: str
-    plan_id: int
-    plan_name: str
+    plan_id: int | None
+    plan_name: str | None
     client_id: str
     node_keys: list[str]
     enabled: bool
     used_gb: float
     quota_gb: float
-    expires_at: datetime
+    expires_at: datetime | None
     created_at: datetime
 
 
@@ -311,12 +318,13 @@ class ApiKeyOut(ORMModel):
 class PlanCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     quota_gb: float = Field(ge=0)
-    duration_days: int = Field(ge=1, le=3650)
+    duration_days: int = Field(ge=0, le=3650)
     max_devices: int = Field(ge=1, le=100)
     price_minor: int = Field(ge=0)
 
 
 class SubscriptionCreate(BaseModel):
     user_id: int = Field(gt=0)
-    plan_id: int = Field(gt=0)
+    plan_id: int | None = Field(default=None, gt=0)
     node_keys: list[str] = Field(default_factory=list, max_length=20)
+    expires_at: datetime | None = None
