@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { api, clearSession, hasAccess, isMockMode, setSession } from './api'
 import { direction, translate, type TranslationKey } from './i18n'
 import { AdminSettingsPage } from './AdminSettingsPage'
+import { AiSettingsPanel } from './AiSettingsPanel'
 import { NodeProvisionPage } from './NodeProvisionPage'
 import { TrafficUsersPage } from './TrafficUsersPage'
 import { AiInboundsPage } from './AiInboundsPage'
