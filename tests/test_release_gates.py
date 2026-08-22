@@ -80,6 +80,23 @@ def test_installer_services_are_least_privilege_and_hardened() -> None:
     assert "--host 127.0.0.1" in installer
 
 
+def test_installer_port_selection_keeps_ci_and_public_proxy_safe() -> None:
+    installer = (ROOT / "deploy/install.sh").read_text(encoding="utf-8")
+    assert 'PORT="${PARS2RAY_PANEL_PORT:-}"' in installer
+    assert 'set_env PANEL_HTTP_PORT "$PORT"' in installer
+    assert 'validate_port(){' in installer
+    assert 'read -r -p "Panel HTTP port [${default}]: " value' in installer
+    assert '--host 127.0.0.1 --port $PORT' in installer
+
+
+def test_node_provision_persists_before_ssh_and_keeps_failed_nodes_visible() -> None:
+    source = (ROOT / "master/app/api/node_management.py").read_text(encoding="utf-8")
+    assert "db.commit()\n        db.refresh(node)" in source
+    assert "node_id = node.id" in source
+    assert "failed_node.status = \"FAILED\"" in source
+    assert "db.rollback()\n        raise HTTPException(status_code=409, detail=\"node_key_exists\")" in source
+
+
 def test_nginx_proxy_has_baseline_security_headers() -> None:
     installer = (ROOT / "deploy/install.sh").read_text(encoding="utf-8")
     assert "server_tokens off;" in installer
