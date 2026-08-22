@@ -6,7 +6,7 @@ from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.core.security import decode_access_token, token_hash
+from app.core.security import decode_access_token, token_hash, utcnow
 from app.db.base import get_db
 from app.models.entities import ApiKey, User
 
@@ -24,7 +24,7 @@ def current_user(
     db: Session = Depends(get_db),
 ) -> User:
     if x_api_key:
-        now = __import__("datetime").datetime.utcnow()
+        now = utcnow()
         key = db.scalar(select(ApiKey).where(
             ApiKey.key_hash == token_hash(x_api_key),
             ApiKey.revoked_at.is_(None),
