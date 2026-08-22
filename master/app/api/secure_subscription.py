@@ -7,10 +7,10 @@ from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.subscription_server import _all_links, _headers, _public_subscription_base, _subscription_rows, subscription
+from app.api.subscription_server import _all_links, _headers, _public_subscription_base, _subscription_path, subscription
 from app.core.security import token_hash, utcnow
 from app.db.base import get_db
-from app.models.entities import Subscription, User
+from app.models.entities import Plan, Subscription, User
 
 public_router = APIRouter(tags=["secure-subscriptions"])
 
@@ -24,18 +24,24 @@ def _lookup(token: str, db: Session) -> tuple[Subscription, User]:
     user = db.get(User, sub.user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=404, detail="subscription_not_found")
-    expires_at = sub.expires_at or user.expires_at
+
+    expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
     if expires_at is not None and expires_at <= utcnow():
         raise HTTPException(status_code=404, detail="subscription_not_found")
-    quota = max(float(user.quota_gb or 0), 0.0)
-    used = max(float(user.used_gb or sub.used_gb or 0), 0.0)
+
+    plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+    quota = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
+    used = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
     if quota > 0 and used >= quota:
         raise HTTPException(status_code=404, detail="subscription_not_found")
     return sub, user
 
 
 def _secure_url(request: Request, db: Session, token: str) -> str:
-    return f"{_public_subscription_base(request, db)}s/{quote(token, safe='')}"
+    base = _public_subscription_base(request, db)
+    path = _subscription_path(db)
+    origin = base[:-len(path)] if base.endswith(path) else f"{request.url.scheme}://{request.headers.get('host') or request.url.netloc}"
+    return f"{origin}/s/{quote(token, safe='')}"
 
 
 @public_router.get("/s/{token}")
