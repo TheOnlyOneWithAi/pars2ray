@@ -96,8 +96,9 @@ async def update_existing_inbounds(node, updates):
     return await command(node, "UPDATE_EXISTING_INBOUNDS", {"updates": updates})
 
 
-async def rollback(node):
-    return await command(node, "ROLLBACK")
+async def rollback(node, operation_id: str | None = None):
+    payload = {"operation_id": operation_id} if operation_id else {}
+    return await command(node, "ROLLBACK", payload)
 
 
 async def restart(node):
