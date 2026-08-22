@@ -32,6 +32,9 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=12, max_length=256)
     role: Literal["SUPER_ADMIN", "ADMIN", "OPERATOR", "RESELLER", "USER"] = "USER"
     is_active: bool = True
+    plan_id: int | None = Field(default=None, ge=1)
+    node_keys: list[str] = Field(default_factory=list, max_length=20)
+    expires_at: datetime | None = None
 
 
 class UserUpdate(BaseModel):
