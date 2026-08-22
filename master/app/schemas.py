@@ -32,6 +32,9 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=12, max_length=256)
     role: Literal["SUPER_ADMIN", "ADMIN", "OPERATOR", "RESELLER", "USER"] = "USER"
     is_active: bool = True
+    plan_id: int | None = Field(default=None, ge=1)
+    node_keys: list[str] = Field(default_factory=list, max_length=20)
+    expires_at: datetime | None = None
 
 
 class UserUpdate(BaseModel):
@@ -48,6 +51,11 @@ class UserOut(ORMModel):
     is_active: bool
     created_at: datetime
     last_login_at: datetime | None
+    plan_id: int | None = None
+    quota_gb: float | None = None
+    used_gb: float | None = None
+    expires_at: datetime | None = None
+    subscription_token: str | None = None
 
 
 class NodeRegisterRequest(BaseModel):

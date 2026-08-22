@@ -4,7 +4,7 @@ from datetime import timedelta
 from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, request_ip, require_roles
@@ -47,17 +47,45 @@ def _out(db: Session, client: Subscription) -> ClientOut:
     )
 
 
+def _ensure_owner(user: User, client: Subscription) -> None:
+    if user.role == "RESELLER" and client.user_id != user.id:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+def _ensure_plan_capacity(db: Session, user_id: int, plan: Plan, exclude_id: int | None = None) -> None:
+    if plan.max_devices < 1:
+        raise HTTPException(status_code=422, detail="invalid_plan_device_limit")
+    query = select(func.count(Subscription.id)).where(Subscription.user_id == user_id, Subscription.enabled.is_(True))
+    if exclude_id is not None:
+        query = query.where(Subscription.id != exclude_id)
+    active_count = int(db.scalar(query) or 0)
+    if active_count >= plan.max_devices:
+        raise HTTPException(status_code=409, detail="max_devices_reached")
+
+
+def _ensure_not_expired(client: Subscription, plan: Plan | None) -> None:
+    if not client.enabled:
+        raise HTTPException(status_code=409, detail="client_disabled")
+    if client.expires_at <= utcnow():
+        raise HTTPException(status_code=409, detail="client_expired")
+    quota = max(float(plan.quota_gb if plan else 0), 0.0)
+    used = max(float(client.used_gb or 0), 0.0)
+    if quota > 0 and used >= quota:
+        raise HTTPException(status_code=409, detail="traffic_quota_exceeded")
+
+
 @router.get("", response_model=list[ClientOut])
 def list_clients(
     search: str = "",
     enabled: bool | None = None,
     limit: int = 200,
     db: Session = Depends(get_db),
-    user: User = Depends(current_user),
+    user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER")),
 ) -> list[ClientOut]:
-    del user
     limit = min(max(limit, 1), 500)
     query = select(Subscription).order_by(Subscription.id.desc()).limit(limit)
+    if user.role == "RESELLER":
+        query = query.where(Subscription.user_id == user.id)
     if enabled is not None:
         query = query.where(Subscription.enabled.is_(enabled))
     if search.strip():
@@ -82,6 +110,8 @@ def create_client(
         raise HTTPException(status_code=403, detail="reseller_can_only_manage_self")
     if payload.single_active and db.scalar(select(Subscription.id).where(Subscription.user_id == target.id, Subscription.enabled.is_(True))):
         raise HTTPException(status_code=409, detail="active_client_exists")
+    if not payload.single_active:
+        _ensure_plan_capacity(db, target.id, plan)
     node_keys = list(dict.fromkeys(key.strip().upper() for key in payload.node_keys if key.strip()))
     if len(node_keys) > 20:
         raise HTTPException(status_code=422, detail="too_many_nodes")
@@ -92,7 +122,7 @@ def create_client(
     client = Subscription(user_id=target.id, plan_id=plan.id, token_hash=token_hash(token), node_keys=node_keys, enabled=True, used_gb=0, expires_at=expires_at)
     db.add(client)
     db.flush()
-    record(db, user, "client.create", "client", str(client.id), request_ip(request), {"user_id": target.id})
+    record(db, user, "client.create", "client", str(client.id), request_ip(request), {"user_id": target.id, "plan_id": plan.id, "expires_at": expires_at.isoformat()})
     db.commit()
     db.refresh(client)
     return _out(db, client)
@@ -107,12 +137,13 @@ def update_client(
     user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER")),
 ) -> ClientOut:
     client = _get_client(db, client_id)
-    if user.role == "RESELLER" and client.user_id != user.id:
-        raise HTTPException(status_code=403, detail="forbidden")
+    _ensure_owner(user, client)
     if payload.plan_id is not None:
         plan = db.get(Plan, payload.plan_id)
         if not plan or not plan.enabled:
             raise HTTPException(status_code=404, detail="plan_not_found")
+        if client.enabled:
+            _ensure_plan_capacity(db, client.user_id, plan, exclude_id=client.id)
         client.plan_id = plan.id
     if payload.node_keys is not None:
         keys = list(dict.fromkeys(key.strip().upper() for key in payload.node_keys if key.strip()))
@@ -120,6 +151,11 @@ def update_client(
             raise HTTPException(status_code=422, detail="too_many_nodes")
         client.node_keys = keys
     if payload.enabled is not None:
+        if payload.enabled:
+            plan = db.get(Plan, client.plan_id)
+            _ensure_plan_capacity(db, client.user_id, plan, exclude_id=client.id)
+            if client.expires_at <= utcnow():
+                raise HTTPException(status_code=422, detail="expires_at_must_be_future")
         client.enabled = payload.enabled
     if payload.expires_at is not None:
         if payload.expires_at <= utcnow():
@@ -139,8 +175,7 @@ def reset_client_traffic(
     user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER")),
 ) -> ClientOut:
     client = _get_client(db, client_id)
-    if user.role == "RESELLER" and client.user_id != user.id:
-        raise HTTPException(status_code=403, detail="forbidden")
+    _ensure_owner(user, client)
     client.used_gb = 0
     record(db, user, "client.traffic_reset", "client", str(client.id), request_ip(request))
     db.commit()
@@ -156,8 +191,7 @@ def delete_client(
     user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER")),
 ) -> dict[str, bool]:
     client = _get_client(db, client_id)
-    if user.role == "RESELLER" and client.user_id != user.id:
-        raise HTTPException(status_code=403, detail="forbidden")
+    _ensure_owner(user, client)
     record(db, user, "client.delete", "client", str(client.id), request_ip(request))
     db.delete(client)
     db.commit()
