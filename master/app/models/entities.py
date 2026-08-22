@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-
 from sqlalchemy import BigInteger, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Table, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-
 from app.db.base import Base
 
 user_roles = Table("user_roles", Base.metadata, Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True), Column("role_id", ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True))
@@ -17,13 +15,12 @@ class User(Base):
     @property
     def role(self) -> str:
         priority = {"SUPER_ADMIN": 0, "ADMIN": 1, "OPERATOR": 2, "RESELLER": 3, "USER": 4}; return min((r.name for r in self.roles), key=lambda x: priority.get(x, 99), default="USER")
-
 class Role(Base):
     __tablename__ = "roles"
-    id: Mapped[int] = mapped_column(primary_key=True); name: Mapped[str] = mapped_column(String(32), unique=True, index=True); description: Mapped[str] = mapped_column(String(255), default=""); users: Mapped[list[User]] = relationship(secondary=user_roles, back_populates="roles"); permissions: Mapped[list["Permission"]] = relationship(secondary=role_permissions, back_populates="permissions", lazy="selectin")
+    id: Mapped[int] = mapped_column(primary_key=True); name: Mapped[str] = mapped_column(String(32), unique=True, index=True); description: Mapped[str] = mapped_column(String(255), default=""); users: Mapped[list[User]] = relationship(secondary=user_roles, back_populates="roles"); permissions: Mapped[list["Permission"]] = relationship(secondary=role_permissions, back_populates="roles", lazy="selectin")
 class Permission(Base):
     __tablename__ = "permissions"
-    id: Mapped[int] = mapped_column(primary_key=True); name: Mapped[str] = mapped_column(String(80), unique=True, index=True); roles: Mapped[list[Role]] = relationship(secondary=role_permissions, back_populates="roles")
+    id: Mapped[int] = mapped_column(primary_key=True); name: Mapped[str] = mapped_column(String(80), unique=True, index=True); roles: Mapped[list[Role]] = relationship(secondary=role_permissions, back_populates="permissions")
 class Node(Base):
     __tablename__ = "nodes"
     id: Mapped[int] = mapped_column(primary_key=True); node_key: Mapped[str] = mapped_column(String(40), unique=True, index=True); country: Mapped[str] = mapped_column(String(2), index=True); endpoint: Mapped[str] = mapped_column(String(255)); agent_token_hash: Mapped[str] = mapped_column(String(128), unique=True); agent_token_enc: Mapped[str] = mapped_column(Text); ssh_config_enc: Mapped[str | None] = mapped_column(Text, nullable=True); agent_version: Mapped[str] = mapped_column(String(64), default="unknown"); status: Mapped[str] = mapped_column(String(24), default="UNKNOWN", index=True); score: Mapped[float] = mapped_column(Float, default=0); cpu_percent: Mapped[float] = mapped_column(Float, default=0); memory_percent: Mapped[float] = mapped_column(Float, default=0); traffic_rx_bytes: Mapped[int] = mapped_column(BigInteger, default=0); traffic_tx_bytes: Mapped[int] = mapped_column(BigInteger, default=0); latency_ms: Mapped[float] = mapped_column(Float, default=0); core: Mapped[str] = mapped_column(String(32), default="unknown"); core_version: Mapped[str] = mapped_column(String(64), default=""); capabilities: Mapped[dict] = mapped_column(JSON, default=dict); last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True); created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -65,4 +62,4 @@ class SystemState(Base):
     id: Mapped[int] = mapped_column(primary_key=True, default=1); mode: Mapped[str] = mapped_column(String(24), default="NORMAL"); international_failures: Mapped[int] = mapped_column(Integer, default=0); international_successes: Mapped[int] = mapped_column(Integer, default=0); ai_status: Mapped[str] = mapped_column(String(24), default="DISABLED"); optimizer_status: Mapped[str] = mapped_column(String(24), default="IDLE"); updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 class ResearchFinding(Base):
     __tablename__ = "research_findings"
-    id: Mapped[int] = mapped_column(primary_key=True); source: Mapped[str] = mapped_column(String(80), index=True); version: Mapped[str] = mapped_column(String(80), index=True); title: Mapped[str] = mapped_column(String(255), default=""); notes: Mapped[str] = mapped_column(Text, default=""); url: Mapped[str] = mapped_column(String(500), default=""); created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True); __table_args__ = (UniqueConstraint("source", "version", name="uq_research_source_version"),)
+    id: Mapped[int] = mapped_column(primary_key=True); source: Mapped[str] = mapped_column(String(80), index=True); version: Mapped[str] = mapped_column(String(80), default=""); title: Mapped[str] = mapped_column(String(255), default=""); notes: Mapped[str] = mapped_column(Text, default=""); url: Mapped[str] = mapped_column(String(500), default=""); created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True); __table_args__ = (UniqueConstraint("source", "version", name="uq_research_source_version"),)
