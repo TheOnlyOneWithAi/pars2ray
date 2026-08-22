@@ -206,7 +206,9 @@ async def create_direct_config(subscription_id: int, payload: DirectConfigCreate
     base = _public_subscription_base(request, db)
     origin = base.split(_subscription_path(db), 1)[0]
     raw_token = decrypt_secret(sub.token_enc) if sub.token_enc else ""
-    subscription_url = f"{origin}/s/{quote(raw_token, safe='')}" if raw_token else f"{base}{quote(target.username, safe='')}"
+    if not raw_token:
+        raise HTTPException(status_code=409, detail="subscription_token_unavailable")
+    subscription_url = f"{origin}/s/{quote(raw_token, safe='')}"
     return {"ok": True, "config": row, "link": link, "subscription_url": subscription_url, "raw_url": f"{subscription_url}/raw", "inbound_required": False, "credential_source": "protocol_generated", "ai": ai_meta}
 
 
