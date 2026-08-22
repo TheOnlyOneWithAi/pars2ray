@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, require_roles
-from app.api.subscription_server import _public_subscription_base, _setting
+from app.api.subscription_server import _public_subscription_base, _setting, _subscription_path
 from app.core.security import decrypt_secret, encrypt_secret, utcnow
 from app.db.base import get_db
 from app.models.entities import Node, Subscription, User
@@ -110,12 +110,7 @@ def _address(payload: DirectConfigCreate, db: Session, request: Request) -> tupl
 
 def _build(payload: DirectConfigCreate, db: Session, request: Request, decision: dict | None = None) -> tuple[str, dict]:
     address, address_meta = _address(payload, db, request)
-    selected = {
-        "protocol": payload.protocol, "port": payload.port, "transport": payload.transport,
-        "security": payload.security, "sni": payload.sni, "host": payload.host,
-        "path": payload.path, "service_name": payload.service_name, "flow": payload.flow,
-        "fingerprint": payload.fingerprint, "public_key": payload.public_key, "short_id": payload.short_id,
-    }
+    selected = {"protocol": payload.protocol, "port": payload.port, "transport": payload.transport, "security": payload.security, "sni": payload.sni, "host": payload.host, "path": payload.path, "service_name": payload.service_name, "flow": payload.flow, "fingerprint": payload.fingerprint, "public_key": payload.public_key, "short_id": payload.short_id}
     if decision:
         selected.update({k: v for k, v in decision.items() if v is not None})
     uid = payload.uuid or str(uuid4())
@@ -177,7 +172,6 @@ async def create_direct_config(subscription_id: int, payload: DirectConfigCreate
     expires_at = sub.expires_at
     if expires_at is not None and expires_at <= utcnow():
         raise HTTPException(status_code=409, detail="subscription_expired")
-
     address, address_meta = _address(payload, db, request)
     fallback = {"protocol": payload.protocol, "port": payload.port, "transport": payload.transport, "security": payload.security, "sni": payload.sni, "host": payload.host, "path": payload.path, "service_name": payload.service_name, "flow": payload.flow, "fingerprint": payload.fingerprint, "public_key": payload.public_key, "short_id": payload.short_id}
     snapshot = {"server": address, "address_source": address_meta["source"], "node_key": payload.node_key, "requested": fallback, "supported": {"protocols": ["vless", "vmess", "shadowsocks"], "transports": ["tcp", "grpc", "websocket", "httpupgrade", "xhttp", "quic"], "security": ["none", "tls", "reality"]}, "goal": "secure, compatible, low overhead"}
@@ -196,7 +190,9 @@ async def create_direct_config(subscription_id: int, payload: DirectConfigCreate
     record(db, user, "subscription.direct_config.create", "subscription", str(sub.id), request.client.host if request.client else "", {"protocol": effective.protocol, "name": effective.name, "ai_enabled": bool(ai_meta.get("enabled")), "address_source": row["address_source"]})
     db.commit()
     base = _public_subscription_base(request, db)
-    subscription_url = f"{base}{quote(user.username, safe='')}"
+    origin = base.split(_subscription_path(db), 1)[0]
+    raw_token = decrypt_secret(sub.token_enc) if sub.token_enc else ""
+    subscription_url = f"{origin}/s/{quote(raw_token, safe='')}" if raw_token else f"{base}{quote(user.username, safe='')}"
     return {"ok": True, "config": row, "link": link, "subscription_url": subscription_url, "raw_url": f"{subscription_url}/raw", "inbound_required": False, "credential_source": "protocol_generated", "ai": ai_meta}
 
 
