@@ -10,7 +10,7 @@ CREDENTIALS_FILE="${ETC_DIR}/credentials"
 CLI_SOURCE="${INSTALL_DIR}/deploy/pars2ray"
 REPOSITORY="${PARS2RAY_REPOSITORY:-https://github.com/TheOnlyOneWithAi/pars2ray.git}"
 REF="${PARS2RAY_REF:-main}"
-PORT="${PARS2RAY_PANEL_PORT:-8000}"
+PORT="${PARS2RAY_PANEL_PORT:-}"
 VENV_DIR="${INSTALL_DIR}/.venv"
 SERVICE_USER="pars2ray"
 APT_TIMEOUT="${PARS2RAY_APT_TIMEOUT:-180}"
@@ -30,6 +30,30 @@ random_hex(){ openssl rand -hex 32; }
 require_timeout(){ command_exists timeout || die "The 'timeout' command is required."; }
 read_env(){ local key="$1"; [[ -f "$ENV_FILE" ]] || return 0; awk -F= -v k="$key" '$1==k{sub(/^[^=]*=/,"" ); print; exit}' "$ENV_FILE"; }
 set_env(){ local key="$1" value="$2" tmp; case "$value" in *$'\n'*|*$'\r'*) die "$key contains a newline";; esac; install -d -m 0750 "$ETC_DIR"; touch "$ENV_FILE"; tmp="${ENV_FILE}.tmp.$$"; awk -v k="$key" -v v="$value" 'BEGIN{done=0} $0 ~ "^" k "=" {if(!done){print k "=" v;done=1};next} {print} END{if(!done)print k "=" v}' "$ENV_FILE" > "$tmp"; chmod 0600 "$tmp"; mv -f "$tmp" "$ENV_FILE"; }
+
+validate_port(){ local port="$1"; [[ "$port" =~ ^[0-9]+$ ]] || return 1; (( port >= 1024 && port <= 65535 )); }
+port_in_use(){ local port="$1"; command_exists ss || return 1; ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .; }
+choose_port(){
+  local configured value default="8000"
+  configured="$(read_env PANEL_HTTP_PORT 2>/dev/null || true)"
+  if [[ -n "${PARS2RAY_PANEL_PORT:-}" ]]; then value="$PARS2RAY_PANEL_PORT"
+  elif [[ -n "$configured" ]]; then value="$configured"
+  elif [[ -n "${PARS2RAY_NONINTERACTIVE:-}" || ! -t 0 ]]; then value="$default"
+  else
+    while :; do
+      read -r -p "Panel HTTP port [${default}]: " value || true
+      value="${value:-$default}"
+      validate_port "$value" || { warn "Port must be an integer from 1024 to 65535."; continue; }
+      port_in_use "$value" && { warn "Port $value is already in use. Choose another port."; continue; }
+      break
+    done
+  fi
+  validate_port "$value" || die "Invalid panel port '$value'. Use a port from 1024 to 65535."
+  if port_in_use "$value" && [[ "$value" != "$configured" ]]; then die "Panel port $value is already in use."; fi
+  PORT="$value"
+  set_env PANEL_HTTP_PORT "$PORT"
+  ok "Panel port selected: $PORT"
+}
 
 apt_common_args=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=120)
 APT_SOURCES_FILE="${TMPDIR:-/tmp}/pars2ray-apt-sources.list"
@@ -88,7 +112,7 @@ Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=$ENV_FILE
 Environment=PYTHONPATH=$INSTALL_DIR/master
-ExecStart=$venv/bin/uvicorn app.main:app --app-dir $INSTALL_DIR/master --host 127.0.0.1 --port $PORT --proxy-headers --timeout-keep-alive 30 --limit-concurrency 1024
+ExecStart=$venv/bin/uvicorn app.main:app --app-dir $INSTALL_DIR/master --host 0.0.0.0 --port $PORT --proxy-headers --timeout-keep-alive 30 --limit-concurrency 1024
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
@@ -214,7 +238,7 @@ tune_network(){ [[ "${PARS2RAY_TUNE_NETWORK:-1}" == "1" ]] || return 0; command_
 net.ipv4.tcp_congestion_control=bbr
 EOF
  sysctl --system >/dev/null 2>&1 || true; ok "TCP BBR enabled for supported kernels"; fi; }
-health_check(){ local attempt url="http://127.0.0.1:${PORT}/health"; systemctl restart pars2ray-master || { journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray master service"; }; for attempt in $(seq 1 45); do if curl -fsS --connect-timeout 1 --max-time 2 "$url" >/dev/null 2>&1; then ok "Panel is responding"; systemctl restart pars2ray-worker || { journalctl -u pars2ray-worker -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray worker service"; }; return 0; fi; sleep 1; done; journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Panel did not become ready. Run: pars2ray logs"; }
+health_check(){ local attempt url="http://127.0.0.1:${PORT}/health"; systemctl restart pars2ray-master || { journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray master service"; }; for attempt in $(seq 1 45); do if curl -fsS --connect-timeout 1 --max-time 2 "$url" >/dev/null 2>&1; then ok "Panel is responding on 0.0.0.0:${PORT}"; systemctl restart pars2ray-worker || { journalctl -u pars2ray-worker -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray worker service"; }; return 0; fi; sleep 1; done; journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Panel did not become ready. Run: pars2ray logs"; }
 print_result(){ local host user; host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}') }"; host="${host// /}"; host="${host:-localhost}"; user="$(read_env ADMIN_USER)"; printf '\n\033[1;32m==============================================\033[0m\n Pars2Ray is installed and running\n==============================================\n Panel:       http://%s:%s\n Username:    %s\n Credentials: %s\n CLI:         pars2ray change-password\n Logs:        pars2ray logs\n\n' "$host" "$PORT" "$user" "$CREDENTIALS_FILE"; }
-main(){ install_packages; fetch_source; ensure_defaults; first_run; setup_python; migrate "$VENV_DIR"; install_cli; write_services "$VENV_DIR"; tune_network; health_check; print_result; }
+main(){ install_packages; fetch_source; ensure_defaults; choose_port; first_run; setup_python; migrate "$VENV_DIR"; install_cli; write_services "$VENV_DIR"; tune_network; health_check; print_result; }
 main "$@"
