@@ -61,6 +61,8 @@ def _local_enforce(key: str, now: float) -> None:
 
 
 def enforce(request: Request) -> None:
+    global _redis_client, _redis_disabled_until
+
     key = (request.client.host if request.client else "unknown")[:64]
     redis_client = _redis()
     if redis_client:
@@ -75,7 +77,6 @@ def enforce(request: Request) -> None:
         except HTTPException:
             raise
         except Exception:
-            global _redis_client, _redis_disabled_until
             _redis_client = False
             _redis_disabled_until = time.monotonic() + 30.0
 
