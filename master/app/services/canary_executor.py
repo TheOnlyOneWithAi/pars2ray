@@ -45,14 +45,12 @@ async def execute_canary(candidate_id: str) -> dict:
     """Run one guarded canary and promote only after deterministic gates pass."""
     if not getattr(settings, "canary_auto_apply", False):
         return {"action": "DRY_RUN", "candidate_id": candidate_id, "reason": "Canary auto-apply is disabled."}
-
-    # Prevent overlapping canaries in the same master process. The DB checks below
-    # remain authoritative for route state; this lock only removes local races.
     if not _canary_lock.acquire(blocking=False):
         raise CanaryExecutionError("another canary execution is already running")
 
     db = SessionLocal()
     applied_nodes: list[Node] = []
+    operation_ids: dict[str, str] = {}
     try:
         candidate = _find_candidate(db, candidate_id)
         if not candidate:
@@ -82,26 +80,21 @@ async def execute_canary(candidate_id: str) -> dict:
         config_hash = _stable_hash(config)
         route_hash = _stable_hash({"route_id": candidate.id, "node_keys": candidate_keys, "core": candidate.core, "protocol": candidate.protocol, "transport": candidate.transport})
         node = nodes[0]
-        await agent_client.apply_config(node, {"config": config, "mode": "CANARY"})
+        canary_operation = f"canary:{candidate.id}:canary:{config_hash}"
+        operation_ids[node.node_key] = canary_operation
+        await agent_client.apply_config(node, {"config": config, "mode": "CANARY", "operation_id": canary_operation, "candidate_id": str(candidate.id)})
         applied_nodes.append(node)
 
         benchmark = await agent_client.benchmark(node, {"duration_seconds": 10, "mode": "CANARY"})
-        observation = CanaryObservation(
-            candidate_id=str(candidate.id),
-            latency_ms=float(benchmark.get("latency_ms", node.latency_ms or 9999)),
-            jitter_ms=float(benchmark.get("jitter_ms", 9999)),
-            packet_loss_percent=float(benchmark.get("packet_loss_percent", 100)),
-            throughput_mbps=float(benchmark.get("throughput_mbps", 0)),
-            stability_percent=float(benchmark.get("stability_percent", 0)),
-            availability_percent=float(benchmark.get("availability_percent", 0)),
-        )
+        observation = CanaryObservation(candidate_id=str(candidate.id), latency_ms=float(benchmark.get("latency_ms", node.latency_ms or 9999)), jitter_ms=float(benchmark.get("jitter_ms", 9999)), packet_loss_percent=float(benchmark.get("packet_loss_percent", 100)), throughput_mbps=float(benchmark.get("throughput_mbps", 0)), stability_percent=float(benchmark.get("stability_percent", 0)), availability_percent=float(benchmark.get("availability_percent", 0)))
         policy = ExperimentPolicy(min_improvement=settings.ai_switch_min_improvement, required_wins=settings.ai_required_wins)
         result = CanaryRunner(policy).evaluate(active.score, observation, candidate.consecutive_wins + 1)
 
         db.add(Experiment(candidate_id=str(candidate.id), route_hash=route_hash, config_hash=config_hash, node_keys=candidate_keys, core=candidate.core, protocol=candidate.protocol, transport=candidate.transport, score=observation.score, latency_ms=observation.latency_ms, jitter_ms=observation.jitter_ms, throughput_mbps=observation.throughput_mbps, packet_loss_percent=observation.packet_loss_percent, stability_percent=observation.stability_percent, level="CANARY", decision=result.action, metadata_json={"availability_percent": observation.availability_percent}))
 
         if result.action != "PROMOTE":
-            await agent_client.rollback(node)
+            rollback_operation = f"canary:{candidate.id}:rollback:{node.node_key}:{config_hash}"
+            await agent_client.rollback(node, operation_id=rollback_operation)
             applied_nodes.clear()
             candidate.consecutive_wins = candidate.consecutive_wins + 1 if result.action == "CANARY" else 0
             if result.action == "CANARY":
@@ -111,7 +104,9 @@ async def execute_canary(candidate_id: str) -> dict:
             return {"action": result.action, "candidate_id": candidate_id, "score": result.score, "reason": result.reason, "consecutive_wins": candidate.consecutive_wins}
 
         for remaining in nodes[1:]:
-            await agent_client.apply_config(remaining, {"config": config, "mode": "PROMOTE"})
+            operation_id = f"canary:{candidate.id}:promote:{remaining.node_key}:{config_hash}"
+            operation_ids[remaining.node_key] = operation_id
+            await agent_client.apply_config(remaining, {"config": config, "mode": "PROMOTE", "operation_id": operation_id, "candidate_id": str(candidate.id)})
             applied_nodes.append(remaining)
 
         active.is_active = False
@@ -128,7 +123,8 @@ async def execute_canary(candidate_id: str) -> dict:
         db.rollback()
         for node in reversed(applied_nodes):
             try:
-                await agent_client.rollback(node)
+                rollback_operation = f"canary:{candidate_id}:rollback:{node.node_key}"
+                await agent_client.rollback(node, operation_id=rollback_operation)
             except Exception:
                 logger.exception("canary rollback failed for node=%s", node.node_key)
         raise CanaryExecutionError(str(exc)) from exc
