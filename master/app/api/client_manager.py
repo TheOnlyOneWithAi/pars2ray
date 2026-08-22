@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
@@ -12,9 +13,12 @@ from app.db.base import get_db
 from app.models.entities import Plan, Subscription, User
 from app.schemas import ClientCreate, ClientOut, ClientUpdate
 from app.services.audit import record
-from app.api.protocols import _client_id
 
 router = APIRouter(prefix="/api/v1/clients", tags=["clients"])
+
+
+def _client_id(token_hash_value: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"pars2ray:{token_hash_value}"))
 
 
 def _get_client(db: Session, client_id: int) -> Subscription:
@@ -26,10 +30,11 @@ def _get_client(db: Session, client_id: int) -> Subscription:
 
 def _out(db: Session, client: Subscription) -> ClientOut:
     plan = db.get(Plan, client.plan_id)
+    target = db.get(User, client.user_id)
     return ClientOut(
         id=client.id,
         user_id=client.user_id,
-        username=(db.get(User, client.user_id).username if db.get(User, client.user_id) else ""),
+        username=target.username if target else "",
         plan_id=client.plan_id,
         plan_name=plan.name if plan else "",
         client_id=_client_id(client.token_hash),
@@ -50,14 +55,14 @@ def list_clients(
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ) -> list[ClientOut]:
+    del user
     limit = min(max(limit, 1), 500)
     query = select(Subscription).order_by(Subscription.id.desc()).limit(limit)
     if enabled is not None:
         query = query.where(Subscription.enabled.is_(enabled))
     if search.strip():
         query = query.join(User, User.id == Subscription.user_id).where(User.username.ilike(f"%{search.strip()}%"))
-    clients = db.scalars(query).all()
-    return [_out(db, client) for client in clients]
+    return [_out(db, client) for client in db.scalars(query).all()]
 
 
 @router.post("", response_model=ClientOut, status_code=201)
@@ -75,25 +80,16 @@ def create_client(
         raise HTTPException(status_code=404, detail="plan_not_found")
     if user.role == "RESELLER" and target.id != user.id:
         raise HTTPException(status_code=403, detail="reseller_can_only_manage_self")
-    active_for_user = db.scalar(select(Subscription).where(Subscription.user_id == target.id, Subscription.enabled.is_(True)))
-    if active_for_user and payload.single_active:
+    if payload.single_active and db.scalar(select(Subscription.id).where(Subscription.user_id == target.id, Subscription.enabled.is_(True))):
         raise HTTPException(status_code=409, detail="active_client_exists")
     node_keys = list(dict.fromkeys(key.strip().upper() for key in payload.node_keys if key.strip()))
     if len(node_keys) > 20:
         raise HTTPException(status_code=422, detail="too_many_nodes")
-    token = random_token(48)
     expires_at = payload.expires_at or (utcnow() + timedelta(days=plan.duration_days))
     if expires_at <= utcnow():
         raise HTTPException(status_code=422, detail="expires_at_must_be_future")
-    client = Subscription(
-        user_id=target.id,
-        plan_id=plan.id,
-        token_hash=token_hash(token),
-        node_keys=node_keys,
-        enabled=True,
-        used_gb=0,
-        expires_at=expires_at,
-    )
+    token = random_token(48)
+    client = Subscription(user_id=target.id, plan_id=plan.id, token_hash=token_hash(token), node_keys=node_keys, enabled=True, used_gb=0, expires_at=expires_at)
     db.add(client)
     db.flush()
     record(db, user, "client.create", "client", str(client.id), request_ip(request), {"user_id": target.id})
