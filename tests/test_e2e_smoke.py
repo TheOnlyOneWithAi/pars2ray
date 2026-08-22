@@ -47,6 +47,12 @@ def test_database_readiness() -> None:
 
 def test_removed_legacy_api_surface_is_not_exposed() -> None:
     with TestClient(app) as client:
-        for path in ("/api/v1/routes", "/api/v1/plans", "/api/v1/subscriptions", "/api/v1/optimizer"):
+        for path in ("/api/v1/routes", "/api/v1/plans", "/api/v1/optimizer"):
             response = client.get(path, headers={"Host": "localhost"})
             assert response.status_code == 404, path
+
+
+def test_subscription_api_is_exposed() -> None:
+    with TestClient(app) as client:
+        response = client.get("/api/v1/subscriptions", headers={"Host": "localhost"})
+    assert response.status_code == 401

@@ -29,7 +29,6 @@ from app.services.scheduler import start_scheduler, stop_scheduler
 
 LEGACY_DISABLED_PREFIXES = (
     "/api/v1/plans",
-    "/api/v1/subscriptions",
     "/api/v1/routes",
     "/api/v1/experiments",
     "/api/v1/optimizer",
