@@ -53,7 +53,6 @@ def apply_proxy(domain: str, tls: bool, email: str | None = None, subscription_p
     if tls:
         if not email or "@" not in email:
             raise ValueError("valid_email_required_for_tls")
-        cert_path = Path(f"/etc/letsencrypt/live/{domain}/fullchain.pem/fullchain.pem")
         cert_path = Path(f"/etc/letsencrypt/live/{domain}/fullchain.pem")
         if not cert_path.exists():
             PROXY_CONFIG.write_text(render_config(domain, False, subscription_port), encoding="utf-8")
