@@ -46,6 +46,13 @@ def _subscription_rows(db: Session, token: str) -> tuple[Subscription, User] | N
     user = db.get(User, sub.user_id)
     if not user or not user.is_active:
         return None
+    plan = db.get(Plan, sub.plan_id)
+    quota_gb = max(float(plan.quota_gb if plan else 0), 0.0)
+    used_gb = max(float(sub.used_gb or 0), 0.0)
+    # quota_gb == 0 is explicitly treated as unlimited. Otherwise a depleted
+    # subscription must stop serving configuration, not merely display 0 GB left.
+    if quota_gb > 0 and used_gb >= quota_gb:
+        return None
     return sub, user
 
 
@@ -150,7 +157,7 @@ def panel_domain(db: Session = Depends(get_db), user: User = Depends(require_rol
 
 
 @router.put("/system/panel-domain")
-def update_panel_domain(payload: PanelDomainUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN"))) -> dict:
+def update_panel_domain(payload: PanelDomainUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN"))) -> dict:
     try:
         result = apply_proxy(payload.domain, payload.tls, payload.email)
     except ValueError as exc:
