@@ -112,7 +112,7 @@ Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=$ENV_FILE
 Environment=PYTHONPATH=$INSTALL_DIR/master
-ExecStart=$venv/bin/uvicorn app.main:app --app-dir $INSTALL_DIR/master --host 0.0.0.0 --port $PORT --proxy-headers --timeout-keep-alive 30 --limit-concurrency 1024
+ExecStart=$venv/bin/uvicorn app.main:app --app-dir $INSTALL_DIR/master --host 127.0.0.1 --port $PORT --proxy-headers --timeout-keep-alive 30 --limit-concurrency 1024
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
@@ -177,68 +177,18 @@ ReadWritePaths=$DATA_DIR
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl daemon-reload
-  systemctl enable pars2ray-master pars2ray-worker >/dev/null || die "Could not enable Pars2Ray services"
-
-  install -d -m 0755 /etc/nginx/conf.d /etc/nginx/sites-enabled /var/www/letsencrypt "$DATA_DIR"
-  cat > "$DATA_DIR/panel-nginx.conf" <<EOF
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name _;
-    server_tokens off;
-    client_max_body_size 10m;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-Frame-Options "DENY" always;
-    add_header Referrer-Policy "no-referrer" always;
-    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
-    location / {
-        proxy_pass http://127.0.0.1:${PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \"upgrade\";
-    }
-    location ~ /\\. {
-        deny all;
-    }
-}
-EOF
-  cat > /etc/nginx/conf.d/pars2ray.conf <<EOF
-include ${DATA_DIR}/panel-nginx.conf;
-EOF
-  rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
-
-  if nginx -t >/tmp/pars2ray-nginx-test.$$ 2>&1; then
-    if systemctl enable nginx >/dev/null 2>&1 && systemctl restart nginx >/dev/null 2>&1; then
-      ok "nginx reverse proxy installed and running"
-    else
-      warn "nginx is installed but could not be started; Pars2Ray services and CLI will continue"
-      tail -n 80 /tmp/pars2ray-nginx-test.$$ >&2 || true
-    fi
-  else
-    warn "nginx configuration is invalid; leaving nginx stopped and continuing with Pars2Ray"
-    tail -n 80 /tmp/pars2ray-nginx-test.$$ >&2 || true
-  fi
-  rm -f /tmp/pars2ray-nginx-test.$$
-}
-
-install_cli(){
-  [[ -f "$CLI_SOURCE" ]] || die "Management CLI source missing: $CLI_SOURCE"
   install -m 0755 "$CLI_SOURCE" /usr/local/bin/pars2ray
-  [[ -x /usr/local/bin/pars2ray ]] || die "Could not install management CLI"
-  /usr/local/bin/pars2ray help >/dev/null 2>&1 || die "Installed pars2ray CLI failed its self-check"
-  ok "Management CLI installed: pars2ray change-password"
+  systemctl daemon-reload
+  systemctl enable pars2ray-master pars2ray-worker >/dev/null
+  ok "Systemd services configured"
 }
 
-tune_network(){ [[ "${PARS2RAY_TUNE_NETWORK:-1}" == "1" ]] || return 0; command_exists sysctl || return 0; local available current; available="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"; if grep -qw bbr <<<"$available"; then current="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"; [[ "$current" == bbr ]] || sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true; cat > /etc/sysctl.d/99-pars2ray-network.conf <<'EOF'
+tune_network(){ [[ "${PARS2RAY_TUNE_NETWORK:-1}" == "1" ]] || return 0; cat >/etc/sysctl.d/99-pars2ray.conf <<'EOF'
+net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
- sysctl --system >/dev/null 2>&1 || true; ok "TCP BBR enabled for supported kernels"; fi; }
-health_check(){ local attempt url="http://127.0.0.1:${PORT}/health"; systemctl restart pars2ray-master || { journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray master service"; }; for attempt in $(seq 1 45); do if curl -fsS --connect-timeout 1 --max-time 2 "$url" >/dev/null 2>&1; then ok "Panel is responding on 0.0.0.0:${PORT}"; systemctl restart pars2ray-worker || { journalctl -u pars2ray-worker -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray worker service"; }; return 0; fi; sleep 1; done; journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Panel did not become ready. Run: pars2ray logs"; }
+ sysctl --system >/dev/null 2>&1 || true; ok "TCP BBR enabled for supported kernels"; }
+health_check(){ local attempt url="http://127.0.0.1:${PORT}/health"; systemctl restart pars2ray-master || { journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray master service"; }; for attempt in $(seq 1 45); do if curl -fsS --connect-timeout 1 --max-time 2 "$url" >/dev/null 2>&1; then ok "Panel is responding on 127.0.0.1:${PORT}"; systemctl restart pars2ray-worker || { journalctl -u pars2ray-worker -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray worker service"; }; return 0; fi; sleep 1; done; journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Panel did not become ready. Run: pars2ray logs"; }
 print_result(){ local host user; host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}') }"; host="${host// /}"; host="${host:-localhost}"; user="$(read_env ADMIN_USER)"; printf '\n\033[1;32m==============================================\033[0m\n Pars2Ray is installed and running\n==============================================\n Panel:       http://%s:%s\n Username:    %s\n Credentials: %s\n CLI:         pars2ray change-password\n Logs:        pars2ray logs\n\n' "$host" "$PORT" "$user" "$CREDENTIALS_FILE"; }
 main(){ install_packages; fetch_source; ensure_defaults; choose_port; first_run; setup_python; migrate "$VENV_DIR"; install_cli; write_services "$VENV_DIR"; tune_network; health_check; print_result; }
 main "$@"
