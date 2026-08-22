@@ -1,14 +1,34 @@
-# Verification record
+# Verification gates
 
-- Python compileall: PASS for master, agent, installer, and migrations.
-- Backend pytest: PASS (6 deterministic tests).
-- Python compileall: PASS for master, agent, installer, and migrations.
-- FastAPI OpenAPI generation: PASS (34 routes; secret fields absent from public schemas).
-- Alembic upgrade head: PASS against a SQLite validation database, including the telemetry indexes.
-- Frontend typecheck/build: PASS with the pinned local toolchain (`tsc`, Vite 7.1.3).
-- Installer syntax: PASS (`bash -n deploy/install.sh`).
-- External panel reference scan: PASS; no references remain.
-- Docker Compose validation/build: not run locally because Docker is not installed in the sandbox; CI validates Compose syntax.
-- `pip-audit`, Hadolint, and `npm audit`: not installed in the sandbox; CI remains the authoritative dependency/security gate.
+Pars2Ray keeps the verification surface explicit so every refactor can be checked before release.
 
-The repository includes pinned frontend dependencies and a multi-stage Docker build that runs the frontend typecheck/build during image construction.
+## CI gates
+
+The `Pars2Ray CI` workflow currently validates:
+
+- Python dependency consistency with `pip check`.
+- Python bytecode compilation for `master`, `agent`, `installer`, and repository scripts.
+- Ruff linting across all Python application and installer code.
+- Master, agent, and repository-level pytest suites.
+- Native installer compilation/imports, shell syntax, required files, and APT mirror policy.
+- Frontend dependency installation, TypeScript typechecking, and production build.
+- Direct dependency pin consistency.
+- Python dependency vulnerability audits with `pip-audit`.
+- Bandit static security scanning.
+- Frontend production dependency auditing with `npm audit`.
+
+## Engineering rules
+
+1. Keep API validation at the boundary and return stable error identifiers.
+2. Keep database models free of unnecessary bidirectional relationships unless a query path needs them.
+3. Keep secrets encrypted at rest and out of public response schemas.
+4. Keep installer logic deterministic and usable without Docker.
+5. Keep frontend typechecking and production builds in CI rather than relying on local development builds.
+6. Prefer small, testable service functions over large route handlers.
+7. Treat a green CI run as the merge gate; documentation must never claim a check passed unless CI or a reproducible local run actually proves it.
+
+## Architecture target
+
+Pars2Ray is intentionally not a source-level clone of 3X-UI. The target is comparable engineering discipline: clear module boundaries, explicit validation, deterministic configuration generation, secure credential handling, testable services, reproducible installation, and a CI pipeline that catches regressions early.
+
+The reference 3X-UI architecture separates HTTP/controller concerns from services and uses a clear database → configuration → Xray runtime pipeline. Pars2Ray follows the same principle across its Python master, node agent, installer, and frontend layers.
