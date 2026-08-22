@@ -1,18 +1,67 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import shlex
+
 import httpx
 
 from app.core.config import settings
 from app.core.security import decrypt_secret
+from app.services.ssh_provision import _client, _exec, decode_config
+
+
+async def _ssh_request(node, method: str, path: str, json_data=None):
+    """Call the node agent through the already-provisioned SSH channel."""
+    if not node.ssh_config_enc:
+        raise RuntimeError("node_agent_http_and_ssh_unavailable")
+
+    token = decrypt_secret(node.agent_token_enc)
+    config = decode_config(node.ssh_config_enc)
+    payload = json.dumps(json_data or {}, separators=(",", ":"))
+    remote = (
+        "export X_AGENT_TOKEN=%s; "
+        "printf '%%s' %s | "
+        "curl -fsS --connect-timeout 5 --max-time 30 "
+        "-X %s -H 'X-Agent-Token: '$X_AGENT_TOKEN "
+        "-H 'Content-Type: application/json' --data-binary @- "
+        "%s"
+    ) % (
+        shlex.quote(token),
+        shlex.quote(payload),
+        shlex.quote(method),
+        shlex.quote(f"http://127.0.0.1:9100{path}"),
+    )
+
+    def run():
+        client = _client(config)
+        try:
+            _, stdout, stderr = _exec(client, remote, timeout=35)
+            code = stdout.channel.recv_exit_status()
+            body = stdout.read().decode("utf-8", "replace")
+            if code != 0:
+                detail = stderr.read().decode("utf-8", "replace")[-1000:]
+                raise RuntimeError(f"node_agent_ssh_request_failed:{detail or code}")
+            return json.loads(body)
+        finally:
+            client.close()
+
+    return await asyncio.to_thread(run)
 
 
 async def request(node, method: str, path: str, json_data=None):
     token = decrypt_secret(node.agent_token_enc)
     headers = {"X-Agent-Token": token}
-    async with httpx.AsyncClient(timeout=settings.agent_request_timeout_seconds, follow_redirects=False) as client:
-        response = await client.request(method, node.endpoint.rstrip("/") + path, headers=headers, json=json_data)
-        response.raise_for_status()
-        return response.json()
+    try:
+        async with httpx.AsyncClient(timeout=settings.agent_request_timeout_seconds, follow_redirects=False) as client:
+            response = await client.request(method, node.endpoint.rstrip("/") + path, headers=headers, json=json_data)
+            response.raise_for_status()
+            return response.json()
+    except (httpx.TransportError, OSError, TimeoutError):
+        try:
+            return await _ssh_request(node, method, path, json_data)
+        except Exception as ssh_error:
+            raise RuntimeError("node_agent_unreachable") from ssh_error
 
 
 async def command(node, name: str, payload: dict | None = None):
