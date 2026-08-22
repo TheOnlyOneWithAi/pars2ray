@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
@@ -20,22 +20,27 @@ logger = logging.getLogger(__name__)
 scheduler: AsyncIOScheduler | None = None
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 async def poll_nodes() -> None:
-    """Check every configured node once, then stop checking them until restart."""
+    """Poll every configured node and persist an authoritative health state."""
     db = SessionLocal()
     reachable = 0
     try:
         nodes = db.scalars(select(Node)).all()
+        now = _utcnow()
         for node in nodes:
             try:
                 snapshot = await agent_client.health(node)
                 metrics = await agent_client.metrics(node)
                 node.status = "ONLINE"
-                node.last_seen_at = datetime.utcnow()
+                node.last_seen_at = now
                 node.cpu_percent = float(metrics.get("cpu_percent", 0))
                 node.memory_percent = float(metrics.get("memory_percent", 0))
-                node.traffic_rx_bytes = int(metrics.get("traffic_rx_bytes", 0))
-                node.traffic_tx_bytes = int(metrics.get("traffic_tx_bytes", 0))
+                node.traffic_rx_bytes = max(int(metrics.get("traffic_rx_bytes", 0)), 0)
+                node.traffic_tx_bytes = max(int(metrics.get("traffic_tx_bytes", 0)), 0)
                 node.capabilities = snapshot.get("capabilities", {})
                 node.core = node.capabilities.get("active_core", node.core)
                 node.core_version = node.capabilities.get("core_version", node.core_version)
@@ -49,7 +54,7 @@ async def poll_nodes() -> None:
         state = national_engine.update_connectivity(db, foreign_reachable=(reachable > 0 or not nodes))
         state.ai_status = "READY" if settings.ai_enabled and settings.openai_api_key else "DISABLED"
         db.commit()
-        logger.info("one-shot node check complete: checked=%d reachable=%d", len(nodes), reachable)
+        logger.info("node health poll complete: checked=%d reachable=%d", len(nodes), reachable)
     finally:
         db.close()
 
@@ -73,18 +78,18 @@ def start_scheduler() -> None:
     if scheduler is not None and scheduler.running:
         return
 
-    # APScheduler's AsyncIOScheduler captures the current event loop. FastAPI's
-    # TestClient creates a fresh loop for each lifespan, so a module-level
-    # scheduler cannot safely be reused across multiple TestClient instances.
     loop = asyncio.get_running_loop()
     scheduler = AsyncIOScheduler(event_loop=loop, timezone="UTC")
+    poll_seconds = max(int(getattr(settings, "node_poll_seconds", 30)), 5)
     scheduler.add_job(
         poll_nodes,
-        "date",
-        run_date=datetime.utcnow() + timedelta(seconds=1),
-        id="node-poll-once",
+        "interval",
+        seconds=poll_seconds,
+        id="node-poll",
         replace_existing=True,
+        coalesce=True,
         max_instances=1,
+        misfire_grace_time=poll_seconds,
     )
     scheduler.add_job(
         intelligence_tick,
