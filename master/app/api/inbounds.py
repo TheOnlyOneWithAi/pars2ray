@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -16,7 +16,7 @@ from app.models.entities import Node, User
 from app.services import agent_client
 from app.services.candidate_engine import generate
 from app.services.config_builder import build_config
-from app.services.inbound_store import create_client, create_inbound, delete_client, ensure_tables, list_clients, list_inbounds, select_inbound
+from app.services.inbound_store import create_client, create_inbound, delete_client, delete_inbound, ensure_tables, list_clients, list_inbounds, select_inbound
 
 router = APIRouter(prefix="/api/v1")
 
@@ -53,6 +53,12 @@ def _score(node: Node, candidate: dict) -> float:
     return round(base + transport_bonus + security_bonus - latency * 0.08 - cpu * 0.03 - memory * 0.02, 2)
 
 
+def _endpoint_host(endpoint: str) -> str:
+    value = (endpoint or "").strip()
+    parsed = urlsplit(value if "://" in value else f"//{value}")
+    return parsed.hostname or ""
+
+
 def _vless_link(client: dict, inbound: dict, node: Node) -> str:
     cfg = inbound["config_json"] or {}
     query: dict[str, str] = {"type": inbound["transport"], "security": inbound["security"]}
@@ -70,7 +76,9 @@ def _vless_link(client: dict, inbound: dict, node: Node) -> str:
             query["pbk"] = str((cfg.get("reality") or {})["public_key"])
         if (cfg.get("reality") or {}).get("short_id"):
             query["sid"] = str((cfg.get("reality") or {})["short_id"])
-    host = node.endpoint.rsplit(":", 1)[0] if ":" in node.endpoint else node.endpoint
+    host = _endpoint_host(node.endpoint)
+    if not host:
+        raise HTTPException(status_code=422, detail="node_endpoint_host_missing")
     label = quote(client["name"], safe="")
     return f"vless://{client['uuid']}@{host}:{inbound['port']}?{'&'.join(f'{quote(k)}={quote(v)}' for k,v in query.items())}#{label}"
 
@@ -90,10 +98,14 @@ def _config_links(client: dict, selected: list[dict], nodes: dict[str, Node]) ->
         if inbound["protocol"] == "vless":
             links.append({"inbound_id": inbound["id"], "protocol": "vless", "link": _vless_link(client, inbound, node), "config": config})
         elif inbound["protocol"] == "trojan":
-            host = node.endpoint.rsplit(":", 1)[0] if ":" in node.endpoint else node.endpoint
+            host = _endpoint_host(node.endpoint)
+            if not host:
+                continue
             links.append({"inbound_id": inbound["id"], "protocol": "trojan", "link": f"trojan://{client['uuid']}@{host}:{inbound['port']}#{quote(client['name'])}", "config": config})
         elif inbound["protocol"] == "vmess":
-            host = node.endpoint.rsplit(":", 1)[0] if ":" in node.endpoint else node.endpoint
+            host = _endpoint_host(node.endpoint)
+            if not host:
+                continue
             payload = {"v": "2", "ps": client["name"], "add": host, "port": inbound["port"], "id": client["uuid"], "aid": 0, "net": inbound["transport"], "type": "none", "host": (inbound["config_json"] or {}).get("host", ""), "path": (inbound["config_json"] or {}).get("path", "/"), "tls": "tls" if inbound["security"] == "tls" else ""}
             raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
             links.append({"inbound_id": inbound["id"], "protocol": "vmess", "link": f"vmess://{raw}", "config": config})
@@ -136,6 +148,11 @@ async def select_ai_inbound(payload: InboundSelection, db: Session = Depends(get
     try:
         await agent_client.apply_config(node, {"source": "pars2ray-ai", "inbounds": [row]})
     except Exception as exc:
+        delete_inbound(db, int(row["id"]))
+        try:
+            await agent_client.rollback(node)
+        except Exception:
+            pass
         raise HTTPException(status_code=502, detail=f"node_apply_failed: {exc}") from exc
     return row
 
@@ -144,6 +161,24 @@ async def select_ai_inbound(payload: InboundSelection, db: Session = Depends(get
 def get_inbounds(db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[dict]:
     _ensure(db)
     return list_inbounds(db)
+
+
+@router.delete("/inbounds/{inbound_id}", tags=["inbounds"])
+def remove_inbound(inbound_id: int, db: Session = Depends(get_db), actor: User = Depends(require_roles("SUPER_ADMIN", "ADMIN"))) -> dict:
+    _ensure(db)
+    row = select_inbound(db, inbound_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="inbound_not_found")
+    node = db.scalar(select(Node).where(Node.node_key == row["node_key"]))
+    if node:
+        try:
+            result = agent_client
+            _ = result
+        except Exception:
+            pass
+    if not delete_inbound(db, inbound_id):
+        raise HTTPException(status_code=404, detail="inbound_not_found")
+    return {"ok": True}
 
 
 @router.post("/users/clients", tags=["client-users"])
