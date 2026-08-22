@@ -41,7 +41,8 @@ def _set_setting(db: Session, key: str, value: str) -> None:
 
 
 def _subscription_path(db: Session) -> str:
-    path = _setting(db, "subscription.path", "/link/").strip()
+    # Public subscriptions must be token-based. A username is not a credential.
+    path = _setting(db, "subscription.path", "/s/").strip()
     if not path.startswith("/"):
         path = "/" + path
     if not path.endswith("/"):
@@ -74,6 +75,8 @@ def _subscription_rows(db: Session, username: str) -> tuple[Subscription, User] 
         if expires_at is not None and expires_at <= now:
             continue
         plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+        if sub.plan_id is not None and plan is None:
+            continue
         quota_gb = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
         used_gb = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
         if quota_gb > 0 and used_gb >= quota_gb:
@@ -165,7 +168,8 @@ def _inbound_links(db: Session, sub: Subscription, user: User) -> list[str]:
     ids = data.get("inbound_ids", []) if isinstance(data, dict) else []
     if not isinstance(ids, list):
         return raw
-    inbound_rows = db.execute(select(inbound_profiles).where(inbound_profiles.c.id.in_([int(i) for i in ids if str(i).isdigit()]))).mappings().all() if ids else []
+    inbound_ids = [int(i) for i in ids if str(i).isdigit()]
+    inbound_rows = db.execute(select(inbound_profiles).where(inbound_profiles.c.id.in_(inbound_ids))).mappings().all() if inbound_ids else []
     node_keys = {str(row["node_key"]) for row in inbound_rows}
     nodes = {n.node_key: n for n in db.scalars(select(Node).where(Node.node_key.in_(node_keys))).all()} if node_keys else {}
     client_id = _client_id(user.username)
@@ -245,8 +249,7 @@ def _html_template(db: Session) -> str:
 def _render_template(template: str, values: dict[str, str]) -> str:
     rendered = template
     for key, value in values.items():
-        for placeholder in ("{{" + key + "}}", "{{" + key.replace("_", r"\_") + "}}"):
-            rendered = rendered.replace(placeholder, value)
+        rendered = rendered.replace("{{" + key + "}}", value)
     return rendered
 
 
@@ -286,7 +289,7 @@ def get_subscription_settings(db: Session = Depends(get_db), user: User = Depend
 def update_subscription_settings(payload: dict, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN"))) -> dict:
     domain = str(payload.get("domain") or "").strip().lower().rstrip(".")
     port = int(payload.get("port", 2096))
-    path = str(payload.get("path", "/link/")).strip()
+    path = str(payload.get("path", "/s/")).strip()
     scheme = str(payload.get("scheme", "https")).lower()
     if port < 1 or port > 65535 or scheme not in {"http", "https"}:
         raise HTTPException(status_code=422, detail="invalid_subscription_settings")
@@ -294,6 +297,8 @@ def update_subscription_settings(payload: dict, db: Session = Depends(get_db), u
         path = "/" + path
     if not path.endswith("/"):
         path += "/"
+    if path.rstrip("/") in {"/link", "/sub", ""}:
+        raise HTTPException(status_code=422, detail="subscription_path_must_not_be_username_based")
     _set_setting(db, "subscription.domain", domain)
     _set_setting(db, "subscription.port", str(port))
     _set_setting(db, "subscription.path", path)
@@ -302,8 +307,6 @@ def update_subscription_settings(payload: dict, db: Session = Depends(get_db), u
     return get_subscription_settings(db=db, user=user)
 
 
-@public_router.get("/link/{username}")
-@public_router.get("/sub/{username}")
 def subscription(username: str, request: Request, db: Session = Depends(get_db)):
     found = _subscription_rows(db, username)
     if not found:
@@ -316,8 +319,6 @@ def subscription(username: str, request: Request, db: Session = Depends(get_db))
     return PlainTextResponse(base64.b64encode(body.encode()).decode(), headers=_headers(db, user, sub), media_type="text/plain; charset=utf-8")
 
 
-@public_router.get("/link/{username}/raw")
-@public_router.get("/sub/{username}/raw")
 def subscription_raw(username: str, request: Request, db: Session = Depends(get_db)) -> PlainTextResponse:
     found = _subscription_rows(db, username)
     if not found:
