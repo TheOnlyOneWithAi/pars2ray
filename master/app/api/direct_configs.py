@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, require_roles
-from app.core.security import decrypt_secret, encrypt_secret, random_token, token_hash, utcnow
+from app.core.security import decrypt_secret, encrypt_secret, utcnow
 from app.db.base import get_db
 from app.models.entities import Node, Subscription, User
 from app.services.audit import record
@@ -116,7 +116,7 @@ def _build(payload: DirectConfigCreate, db: Session) -> tuple[str, dict]:
         link = "vmess://" + base64.b64encode(json.dumps(obj, separators=(",", ":")).encode()).decode()
     else:
         method = payload.method or "aes-128-gcm"
-        secret = payload.password or random_token(24)
+        secret = payload.password or __import__("secrets").token_urlsafe(18)
         userinfo = base64.urlsafe_b64encode(f"{method}:{secret}".encode()).decode().rstrip("=")
         link = f"ss://{userinfo}@{address}:{payload.port}#{name}"
     return link, {"id": str(uuid4()), "name": payload.name, "protocol": payload.protocol, "link": link, "address": address, "port": payload.port, "node_key": payload.node_key.upper() if payload.node_key else None, "enabled": True, "created_at": utcnow().isoformat()}
@@ -150,15 +150,10 @@ def create_direct_config(subscription_id: int, payload: DirectConfigCreate, requ
     if len(rows) > 100:
         raise HTTPException(status_code=422, detail="too_many_direct_configs")
     _save(sub, rows)
-    if not sub.token_enc:
-        raw = random_token(48)
-        sub.token_hash = token_hash(raw)
-        sub.token_enc = encrypt_secret(raw)
     record(db, user, "subscription.direct_config.create", "subscription", str(sub.id), request.client.host if request.client else "", {"protocol": payload.protocol, "name": payload.name})
     db.commit()
-    raw_token = decrypt_secret(sub.token_enc)
     base = _public_subscription_base(request, db)
-    subscription_url = f"{base}{quote(raw_token, safe='')}"
+    subscription_url = f"{base}{quote(user.username, safe='')}"
     return {"ok": True, "config": row, "link": link, "subscription_url": subscription_url, "raw_url": f"{subscription_url}/raw", "inbound_required": False, "credential_source": "protocol_generated"}
 
 
