@@ -30,8 +30,6 @@ export APT_CONFIG="$TMP/apt-installer.conf"
 sed -i 's#Panel: http://${host}:${PORT}#Panel: http://${host}#' "$TMP/install.sh"
 sed -i 's# Panel:       http://%s:%s# Panel:       http://%s#' "$TMP/install.sh"
 
-# Run the native installer first. The post-flight below is intentionally kept in
-# this bootstrap so older deploy/install.sh revisions get the same guarantees.
 bash "$TMP/install.sh" "$@"
 
 INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
@@ -40,12 +38,7 @@ ETC_DIR="/etc/pars2ray"
 ENV_FILE="${ETC_DIR}/pars2ray.env"
 PORT="${PARS2RAY_PANEL_PORT:-8000}"
 
-read_env(){
-  local key="$1"
-  [[ -f "$ENV_FILE" ]] || return 0
-  awk -F= -v k="$key" '$1==k{sub(/^[^=]*=/,"" ); print; exit}' "$ENV_FILE"
-}
-
+read_env(){ local key="$1"; [[ -f "$ENV_FILE" ]] || return 0; awk -F= -v k="$key" '$1==k{sub(/^[^=]*=/,"" ); print; exit}' "$ENV_FILE"; }
 log(){ printf '\033[1;36m[pars2ray]\033[0m %s\n' "$*"; }
 ok(){ printf '\033[1;32m  ✓\033[0m %s\n' "$*"; }
 die(){ printf '\033[1;31m[pars2ray] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -54,7 +47,6 @@ configured_port="$(read_env PANEL_HTTP_PORT || true)"
 [[ "$configured_port" =~ ^[0-9]+$ ]] && PORT="$configured_port"
 (( PORT >= 1 && PORT <= 65535 )) || die "Invalid Pars2Ray panel port: $PORT"
 
-# Deterministic nginx topology: one default HTTP vhost proxying to Uvicorn.
 install -d -m 0755 /etc/nginx/conf.d /etc/nginx/sites-enabled /var/www/letsencrypt "$DATA_DIR"
 rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/pars2ray.conf
 cat > "$DATA_DIR/panel-nginx.conf" <<EOF
@@ -87,14 +79,18 @@ ln -sfn "$DATA_DIR/panel-nginx.conf" /etc/nginx/conf.d/pars2ray.conf
 nginx -t >/dev/null || die "Nginx configuration validation failed"
 systemctl reload nginx || systemctl restart nginx || die "Could not reload/restart nginx"
 
-# Reload unit definitions before restart so service upgrades cannot leave the
-# 'Current command vanished from the unit file' state.
+# HTTP is the public entrypoint. If UFW is installed and active, allow the
+# public listener; never expose the internal Uvicorn port.
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  ufw allow 80/tcp >/dev/null || die "Could not allow HTTP through UFW"
+  ufw delete allow 8000/tcp >/dev/null 2>&1 || true
+fi
+
 systemctl daemon-reload
 systemctl enable pars2ray-master pars2ray-worker >/dev/null 2>&1 || die "Could not enable Pars2Ray services"
 systemctl restart pars2ray-master
 systemctl restart pars2ray-worker
 
-# Verify both hops. A successful backend check alone is not a successful install.
 ready=0
 for _ in $(seq 1 30); do
   if curl -fsS --connect-timeout 2 --max-time 3 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then ready=1; break; fi
@@ -107,9 +103,8 @@ for _ in $(seq 1 15); do
   if curl -fsS --connect-timeout 2 --max-time 3 -H 'Host: localhost' http://127.0.0.1/health >/dev/null 2>&1; then public_ready=1; break; fi
   sleep 1
 done
-(( public_ready == 1 )) || die "Nginx reverse proxy health check failed on http://127.0.0.1/health"
+(( public_ready == 1 )) || { nginx -T 2>&1 | tail -n 160 >&2 || true; die "Nginx reverse proxy health check failed on http://127.0.0.1/health"; }
 
-# Keep the credentials endpoint aligned with the real public endpoint.
 host="${PARS2RAY_PUBLIC_HOST:-}"
 [[ -n "$host" ]] || host="$(hostname -I 2>/dev/null | awk '{print $1}')"
 host="${host:-localhost}"
