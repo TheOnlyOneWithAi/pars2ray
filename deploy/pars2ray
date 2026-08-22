@@ -177,8 +177,13 @@ PY
 
 update(){
   [[ -x "$INSTALL_DIR/deploy/install.sh" ]] || fail "Installer not found: $INSTALL_DIR/deploy/install.sh"
-  echo "[pars2ray] Running the full native installer/update..."
-  exec bash "$INSTALL_DIR/deploy/install.sh"
+  load_env
+  local configured_port="${PANEL_HTTP_PORT:-}"
+  [[ -n "$configured_port" ]] || fail "PANEL_HTTP_PORT is not configured in $ENV_FILE"
+  export PANEL_HTTP_PORT="$configured_port"
+  export PARS2RAY_NONINTERACTIVE=1
+  echo "[pars2ray] Updating Pars2Ray using existing panel port ${PANEL_HTTP_PORT}..."
+  exec env PANEL_HTTP_PORT="$PANEL_HTTP_PORT" PARS2RAY_NONINTERACTIVE=1 bash "$INSTALL_DIR/deploy/install.sh"
 }
 
 case "${1:-help}" in
@@ -199,7 +204,7 @@ case "${1:-help}" in
   help|-h|--help) cat <<'EOF'
 Pars2Ray management CLI
 
-  update             Run the complete native installer/update
+  update             Run the complete native installer/update using the saved panel port
   change-password    Change panel password and verify live login
   password           Alias for change-password
   diagnose-auth      Show safe authentication/database diagnostics
