@@ -33,6 +33,7 @@ from app.services.scheduler import start_scheduler, stop_scheduler
 LEGACY_DISABLED_PREFIXES = (
     "/api/v1/plans", "/api/v1/routes", "/api/v1/experiments", "/api/v1/optimizer", "/api/v1/ai/configure-node",
 )
+PUBLIC_PRIVATE_PREFIXES = ("/s/", "/link/", "/subscriptions/")
 
 
 @asynccontextmanager
@@ -74,9 +75,11 @@ async def security_and_rate_limit(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    if request.url.path.startswith("/api/") or request.url.path.startswith("/s/"):
-        response.headers["Cache-Control"] = "no-store, max-age=0"
-    elif request.url.path.startswith("/assets/"):
+    path = request.url.path
+    if path.startswith("/api/") or any(path.startswith(prefix) for prefix in PUBLIC_PRIVATE_PREFIXES):
+        response.headers["Cache-Control"] = "private, no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    elif path.startswith("/assets/"):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     else:
         response.headers["Cache-Control"] = "public, max-age=60"
