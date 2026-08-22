@@ -93,7 +93,7 @@ async def execute_canary(candidate_id: str) -> dict:
         db.add(Experiment(candidate_id=str(candidate.id), route_hash=route_hash, config_hash=config_hash, node_keys=candidate_keys, core=candidate.core, protocol=candidate.protocol, transport=candidate.transport, score=observation.score, latency_ms=observation.latency_ms, jitter_ms=observation.jitter_ms, throughput_mbps=observation.throughput_mbps, packet_loss_percent=observation.packet_loss_percent, stability_percent=observation.stability_percent, level="CANARY", decision=result.action, metadata_json={"availability_percent": observation.availability_percent}))
 
         if result.action != "PROMOTE":
-            rollback_operation = f"canary:{candidate.id}:rollback:{node.node_key}:{config_hash}"
+            rollback_operation = f"{canary_operation}:rollback"
             await agent_client.rollback(node, operation_id=rollback_operation)
             applied_nodes.clear()
             candidate.consecutive_wins = candidate.consecutive_wins + 1 if result.action == "CANARY" else 0
@@ -123,8 +123,8 @@ async def execute_canary(candidate_id: str) -> dict:
         db.rollback()
         for node in reversed(applied_nodes):
             try:
-                rollback_operation = f"canary:{candidate_id}:rollback:{node.node_key}"
-                await agent_client.rollback(node, operation_id=rollback_operation)
+                base_operation = operation_ids.get(node.node_key, f"canary:{candidate_id}:{node.node_key}")
+                await agent_client.rollback(node, operation_id=f"{base_operation}:rollback")
             except Exception:
                 logger.exception("canary rollback failed for node=%s", node.node_key)
         raise CanaryExecutionError(str(exc)) from exc
