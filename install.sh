@@ -29,6 +29,13 @@ chmod 600 "$TMP/apt-installer.conf"
 # In particular, force IPv4 because some VPS networks have broken/slow IPv6 paths.
 export APT_CONFIG="$TMP/apt-installer.conf"
 
+# The native installer exposes the panel through nginx on port 80. Uvicorn stays
+# bound to loopback on the internal panel port. Never advertise the internal port.
+# Keep this compatibility patch in the bootstrap so existing deploy/install.sh
+# revisions cannot print an unreachable :8000 URL.
+sed -i 's#Panel: http://${host}:${PORT}#Panel: http://${host}#' "$TMP/install.sh"
+sed -i 's# Panel:       http://%s:%s# Panel:       http://%s#' "$TMP/install.sh"
+
 # The native installer owns the complete installation lifecycle.
 # No Docker, Compose, PostgreSQL or Redis setup is performed here.
 exec bash "$TMP/install.sh" "$@"
