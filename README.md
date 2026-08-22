@@ -18,13 +18,13 @@ tests/        deterministic backend tests
 
 ## One-command Native installation
 
-Pars2Ray now installs without Docker, PostgreSQL, Redis, or manual `.env` editing.
+Pars2Ray installs without Docker, PostgreSQL, Redis, or manual `.env` editing.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TheOnlyOneWithAi/pars2ray/main/deploy/install.sh | sudo bash
 ```
 
-Native Installer v2 automatically installs Python/venv prerequisites, downloads the current release, generates runtime secrets, creates a local SQLite database, runs Alembic migrations, creates `pars2ray-master` and `pars2ray-worker` systemd services, verifies `/health`, and prints the panel URL.
+Native Installer automatically installs Python/venv prerequisites, downloads the current release, generates runtime secrets, creates a local SQLite database, runs Alembic migrations, creates `pars2ray-master` and `pars2ray-worker` systemd services, verifies `/health`, and prints the panel URL.
 
 On first install it asks only for:
 
@@ -43,6 +43,18 @@ pars2ray restart
 pars2ray logs
 pars2ray update
 ```
+
+### Change the panel password from SSH
+
+After installation, a root SSH session can change the panel login password without editing `.env` or touching the database manually:
+
+```bash
+pars2ray change-password
+```
+
+`pars2ray password` is an alias. The command prompts for the new password without echoing it, requires at least 12 characters, updates the hashed password in the database, revokes existing refresh sessions, synchronizes the protected installer credential file, and restarts the master and worker services.
+
+For automation, the command also accepts `PARS2RAY_NEW_PASSWORD` and `PARS2RAY_ADMIN_USER` environment variables; avoid putting passwords in shell history or process listings when using automation.
 
 ### Data
 
