@@ -112,7 +112,7 @@ Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=$ENV_FILE
 Environment=PYTHONPATH=$INSTALL_DIR/master
-ExecStart=$venv/bin/uvicorn app.main:app --app-dir $INSTALL_DIR/master --host 0.0.0.0 --port $PORT --proxy-headers --timeout-keep-alive 30 --limit-concurrency 1024
+ExecStart=$venv/bin/uvicorn app.main:app --app-dir $INSTALL_DIR/master --host 127.0.0.1 --port $PORT --proxy-headers --timeout-keep-alive 30 --limit-concurrency 1024
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
@@ -200,7 +200,7 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \"upgrade\";
+        proxy_set_header Connection "upgrade";
     }
     location ~ /\\. {
         deny all;
@@ -238,7 +238,7 @@ tune_network(){ [[ "${PARS2RAY_TUNE_NETWORK:-1}" == "1" ]] || return 0; command_
 net.ipv4.tcp_congestion_control=bbr
 EOF
  sysctl --system >/dev/null 2>&1 || true; ok "TCP BBR enabled for supported kernels"; fi; }
-health_check(){ local attempt url="http://127.0.0.1:${PORT}/health"; systemctl restart pars2ray-master || { journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray master service"; }; for attempt in $(seq 1 45); do if curl -fsS --connect-timeout 1 --max-time 2 "$url" >/dev/null 2>&1; then ok "Panel is responding on 0.0.0.0:${PORT}"; systemctl restart pars2ray-worker || { journalctl -u pars2ray-worker -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray worker service"; }; return 0; fi; sleep 1; done; journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Panel did not become ready. Run: pars2ray logs"; }
+health_check(){ local attempt url="http://127.0.0.1:${PORT}/health"; systemctl restart pars2ray-master || { journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray master service"; }; for attempt in $(seq 1 45); do if curl -fsS --connect-timeout 1 --max-time 2 "$url" >/dev/null 2>&1; then ok "Panel is responding on 127.0.0.1:${PORT}"; systemctl restart pars2ray-worker || { journalctl -u pars2ray-worker -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray worker service"; }; return 0; fi; sleep 1; done; journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Panel did not become ready. Run: pars2ray logs"; }
 print_result(){ local host user; host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}') }"; host="${host// /}"; host="${host:-localhost}"; user="$(read_env ADMIN_USER)"; printf '\n\033[1;32m==============================================\033[0m\n Pars2Ray is installed and running\n==============================================\n Panel:       http://%s:%s\n Username:    %s\n Credentials: %s\n CLI:         pars2ray change-password\n Logs:        pars2ray logs\n\n' "$host" "$PORT" "$user" "$CREDENTIALS_FILE"; }
 main(){ install_packages; fetch_source; ensure_defaults; choose_port; first_run; setup_python; migrate "$VENV_DIR"; install_cli; write_services "$VENV_DIR"; tune_network; health_check; print_result; }
 main "$@"
