@@ -67,20 +67,19 @@ def _subscription_rows(db: Session, username: str) -> tuple[Subscription, User] 
     user = db.scalar(select(User).where(User.username == username, User.is_active.is_(True)))
     if not user:
         return None
-    sub = db.scalar(select(Subscription).where(Subscription.user_id == user.id, Subscription.enabled.is_(True)).order_by(Subscription.id.desc()))
-    if not sub:
-        return None
-    expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
-    if expires_at is not None and expires_at <= utcnow():
-        return None
-    # Direct user limits are authoritative for plan-less subscriptions. Plans
-    # remain templates for subscriptions created from the client manager.
-    plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
-    quota_gb = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
-    used_gb = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
-    if quota_gb > 0 and used_gb >= quota_gb:
-        return None
-    return sub, user
+    subscriptions = db.scalars(select(Subscription).where(Subscription.user_id == user.id, Subscription.enabled.is_(True)).order_by(Subscription.id.desc())).all()
+    now = utcnow()
+    for sub in subscriptions:
+        expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
+        if expires_at is not None and expires_at <= now:
+            continue
+        plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+        quota_gb = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
+        used_gb = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
+        if quota_gb > 0 and used_gb >= quota_gb:
+            continue
+        return sub, user
+    return None
 
 
 def _client_id(username: str) -> str:
