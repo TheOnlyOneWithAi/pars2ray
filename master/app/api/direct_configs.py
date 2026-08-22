@@ -12,12 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, require_roles
-from app.api.subscription_server import _public_subscription_base, _setting, _subscription_path
 from app.core.security import decrypt_secret, encrypt_secret, utcnow
 from app.db.base import get_db
 from app.models.entities import Node, Subscription, User
 from app.services.audit import record
 from app.services.config_decision import decide_config
+from app.api.subscription_server import _public_subscription_base, _setting, _subscription_path
 
 router = APIRouter(prefix="/api/v1", tags=["direct-configs"])
 
@@ -77,6 +77,18 @@ def _owner(user: User, sub: Subscription) -> None:
         raise HTTPException(status_code=403, detail="forbidden")
 
 
+def _entitlement(user: User, sub: Subscription) -> None:
+    if not sub.enabled:
+        raise HTTPException(status_code=409, detail="subscription_inactive")
+    expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
+    if expires_at is not None and expires_at <= utcnow():
+        raise HTTPException(status_code=409, detail="subscription_expired")
+    quota = max(float(user.quota_gb or 0), 0.0)
+    used = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
+    if quota > 0 and used >= quota:
+        raise HTTPException(status_code=409, detail="traffic_quota_exceeded")
+
+
 def _endpoint_host(endpoint: str) -> str:
     value = endpoint.strip()
     if not value:
@@ -87,7 +99,8 @@ def _endpoint_host(endpoint: str) -> str:
 
 def _address(payload: DirectConfigCreate, db: Session, request: Request) -> tuple[str, dict]:
     if payload.address:
-        return payload.address.strip(), {"source": "explicit"}
+        address = _endpoint_host(payload.address) or payload.address.strip()
+        return address, {"source": "explicit"}
     if payload.node_key:
         node = db.scalar(select(Node).where(Node.node_key == payload.node_key.upper()))
         if not node:
@@ -101,8 +114,7 @@ def _address(payload: DirectConfigCreate, db: Session, request: Request) -> tupl
             host = _endpoint_host(value)
             if host:
                 return host, {"source": key}
-    host = request.headers.get("host") or request.url.hostname or ""
-    host = _endpoint_host(host)
+    host = _endpoint_host(request.headers.get("host") or request.url.hostname or "")
     if host:
         return host, {"source": "request_host"}
     raise HTTPException(status_code=422, detail="server_address_unavailable")
@@ -167,11 +179,10 @@ async def create_direct_config(subscription_id: int, payload: DirectConfigCreate
     if not sub:
         raise HTTPException(status_code=404, detail="subscription_not_found")
     _owner(user, sub)
-    if not sub.enabled:
-        raise HTTPException(status_code=409, detail="subscription_inactive")
-    expires_at = sub.expires_at
-    if expires_at is not None and expires_at <= utcnow():
-        raise HTTPException(status_code=409, detail="subscription_expired")
+    target = db.get(User, sub.user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="user_not_found")
+    _entitlement(target, sub)
     address, address_meta = _address(payload, db, request)
     fallback = {"protocol": payload.protocol, "port": payload.port, "transport": payload.transport, "security": payload.security, "sni": payload.sni, "host": payload.host, "path": payload.path, "service_name": payload.service_name, "flow": payload.flow, "fingerprint": payload.fingerprint, "public_key": payload.public_key, "short_id": payload.short_id}
     snapshot = {"server": address, "address_source": address_meta["source"], "node_key": payload.node_key, "requested": fallback, "supported": {"protocols": ["vless", "vmess", "shadowsocks"], "transports": ["tcp", "grpc", "websocket", "httpupgrade", "xhttp", "quic"], "security": ["none", "tls", "reality"]}, "goal": "secure, compatible, low overhead"}
@@ -192,7 +203,7 @@ async def create_direct_config(subscription_id: int, payload: DirectConfigCreate
     base = _public_subscription_base(request, db)
     origin = base.split(_subscription_path(db), 1)[0]
     raw_token = decrypt_secret(sub.token_enc) if sub.token_enc else ""
-    subscription_url = f"{origin}/s/{quote(raw_token, safe='')}" if raw_token else f"{base}{quote(user.username, safe='')}"
+    subscription_url = f"{origin}/s/{quote(raw_token, safe='')}" if raw_token else f"{base}{quote(target.username, safe='')}"
     return {"ok": True, "config": row, "link": link, "subscription_url": subscription_url, "raw_url": f"{subscription_url}/raw", "inbound_required": False, "credential_source": "protocol_generated", "ai": ai_meta}
 
 
