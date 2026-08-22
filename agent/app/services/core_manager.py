@@ -37,7 +37,6 @@ def _state_lock():
 
 
 def _atomic_copy(source: Path, destination: Path) -> None:
-    """Copy a file atomically so readers never see a partial JSON document."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     temporary_path = Path(temporary)
@@ -102,7 +101,6 @@ def _journal_put(operation_id: str, fingerprint: str, result: dict) -> None:
     if not operation_id:
         return
     journal = _load_journal()
-    # Keep the journal bounded while retaining the most recent operations.
     if len(journal) >= 256 and operation_id not in journal:
         for key in list(journal)[:64]:
             journal.pop(key, None)
@@ -185,11 +183,12 @@ def _restore_service(core: str) -> tuple[bool, str]:
 
 
 def apply(payload: dict) -> dict:
-    """Validate and apply a config with durable idempotency for retried operations."""
+    """Validate and apply a config with durable idempotency for successful operations."""
     core = payload.get("core", "xray")
     config = payload.get("config")
     operation_id = str(payload.get("operation_id") or payload.get("candidate_id") or "").strip()
     fingerprint = _operation_fingerprint({"core": core, "config": config, "mode": payload.get("mode")})
+
     if operation_id:
         try:
             with _state_lock():
@@ -200,11 +199,7 @@ def apply(payload: dict) -> dict:
             return {"ok": False, "reason": str(exc)}
 
     if core not in ALLOWED_CORES or not isinstance(config, dict):
-        result = {"ok": False, "reason": "invalid_config_request"}
-        if operation_id:
-            with _state_lock():
-                _journal_put(operation_id, fingerprint, result)
-        return result
+        return {"ok": False, "reason": "invalid_config_request"}
 
     with _state_lock():
         try:
@@ -222,9 +217,7 @@ def apply(payload: dict) -> dict:
 
                 valid, reason = _validate(core, candidate)
                 if not valid:
-                    result = {"ok": False, "reason": reason}
-                    _journal_put(operation_id, fingerprint, result)
-                    return result
+                    return {"ok": False, "reason": reason}
 
                 if had_active:
                     _atomic_copy(ACTIVE, PREVIOUS)
@@ -237,12 +230,9 @@ def apply(payload: dict) -> dict:
                     if had_active and PREVIOUS.exists():
                         _atomic_copy(PREVIOUS, ACTIVE)
                         recovered, recovery_reason = _restore_service(core)
-                        result = {"ok": False, "reason": restart_reason, "rolled_back": True, "recovery_ok": recovered, "recovery_reason": recovery_reason}
-                    else:
-                        ACTIVE.unlink(missing_ok=True)
-                        result = {"ok": False, "reason": restart_reason, "rolled_back": True, "recovery_ok": True}
-                    _journal_put(operation_id, fingerprint, result)
-                    return result
+                        return {"ok": False, "reason": restart_reason, "rolled_back": True, "recovery_ok": recovered, "recovery_reason": recovery_reason}
+                    ACTIVE.unlink(missing_ok=True)
+                    return {"ok": False, "reason": restart_reason, "rolled_back": True, "recovery_ok": True}
 
                 result = {"ok": True, "core": core, "candidate_id": payload.get("candidate_id", ""), "operation_id": operation_id}
                 _journal_put(operation_id, fingerprint, result)
@@ -254,7 +244,7 @@ def apply(payload: dict) -> dict:
 
 
 def rollback(operation_id: str = "") -> dict:
-    """Swap ACTIVE/PREVIOUS once; retries with the same operation ID return the prior result."""
+    """Swap ACTIVE/PREVIOUS once; only successful rollbacks are journaled."""
     operation_id = str(operation_id or "").strip()
     fingerprint = hashlib.sha256(b"rollback").hexdigest()
     with _state_lock():
@@ -266,15 +256,11 @@ def rollback(operation_id: str = "") -> dict:
             return {"ok": False, "reason": str(exc)}
 
         if not PREVIOUS.exists():
-            result = {"ok": False, "reason": "no_previous_config"}
-            _journal_put(operation_id, fingerprint, result)
-            return result
+            return {"ok": False, "reason": "no_previous_config"}
 
         core = capability().get("active_core")
         if core == "none":
-            result = {"ok": False, "reason": "no_supported_core_installed"}
-            _journal_put(operation_id, fingerprint, result)
-            return result
+            return {"ok": False, "reason": "no_supported_core_installed"}
 
         current = None
         if ACTIVE.exists():
@@ -292,9 +278,7 @@ def rollback(operation_id: str = "") -> dict:
                     recovered, recovery_reason = _restore_service(core)
                 else:
                     recovered, recovery_reason = False, "no_current_config_to_restore"
-                result = {"ok": False, "reason": reason, "rolled_back": True, "recovery_ok": recovered, "recovery_reason": recovery_reason}
-                _journal_put(operation_id, fingerprint, result)
-                return result
+                return {"ok": False, "reason": reason, "rolled_back": True, "recovery_ok": recovered, "recovery_reason": recovery_reason}
 
             if current and current.exists():
                 _atomic_copy(current, PREVIOUS)
@@ -318,5 +302,3 @@ def mark_golden() -> dict:
     _ensure_state()
     if not ACTIVE.exists():
         return {"ok": False, "reason": "no_active_config"}
-    _atomic_copy(ACTIVE, GOLDEN)
-    return {"ok": True}
