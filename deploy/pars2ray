@@ -13,6 +13,7 @@ systemctl_cmd(){ command -v systemctl >/dev/null 2>&1 || fail "systemctl is requ
 change_password(){
   [[ -r "$ENV_FILE" ]] || fail "Pars2Ray environment file not found: $ENV_FILE"
   [[ -x "$INSTALL_DIR/.venv/bin/python" ]] || fail "Pars2Ray Python environment not found"
+  [[ -r "$INSTALL_DIR/master/app/core/security.py" ]] || fail "Pars2Ray application source is incomplete"
 
   local user="${PARS2RAY_ADMIN_USER:-}" password confirm
   if [[ -z "$user" ]]; then
@@ -36,7 +37,7 @@ change_password(){
   (( ${#password} >= 12 )) || fail "Password must be at least 12 characters"
 
   echo "[pars2ray] Updating the panel password..."
-  if ! PARS2RAY_NEW_PASSWORD="$password" PARS2RAY_TARGET_USER="$user" PARS2RAY_INSTALL_DIR="$INSTALL_DIR" "$INSTALL_DIR/.venv/bin/python" - <<'PY'
+  if ! PARS2RAY_NEW_PASSWORD="$password" PARS2RAY_TARGET_USER="$user" PYTHONPATH="$INSTALL_DIR/master" "$INSTALL_DIR/.venv/bin/python" - <<'PY'
 import os
 from datetime import datetime, timezone
 from sqlalchemy import select
@@ -51,11 +52,14 @@ db = SessionLocal()
 try:
     user = db.scalar(select(User).where(User.username == username))
     if user is None:
-        raise SystemExit(f"User not found: {username}")
+        raise RuntimeError(f"User not found: {username}")
     user.password_hash = hash_password(password)
     for token in db.scalars(select(RefreshToken).where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))).all():
         token.revoked_at = datetime.now(timezone.utc)
     db.commit()
+except Exception:
+    db.rollback()
+    raise
 finally:
     db.close()
 PY
@@ -63,7 +67,6 @@ PY
     fail "Database password update failed"
   fi
 
-  # Keep installer state synchronized; never print the password.
   local tmp="${ENV_FILE}.tmp.$$"
   awk -v v="$password" 'BEGIN{done=0} /^ADMIN_PASSWORD=/{if(!done){print "ADMIN_PASSWORD=" v;done=1};next} {print} END{if(!done)print "ADMIN_PASSWORD=" v}' "$ENV_FILE" > "$tmp"
   chmod 0600 "$tmp"
@@ -99,42 +102,23 @@ case "${1:-help}" in
     exec bash "$INSTALL_DIR/deploy/install.sh"
     ;;
   update)
-    git -C "$INSTALL_DIR" fetch --depth 1 origin main
-    git -C "$INSTALL_DIR" reset --hard origin/main
+    git -C "$INSTALL_DIR" fetch --depth 1 origin main || fail "Could not fetch latest Pars2Ray source"
+    git -C "$INSTALL_DIR" reset --hard origin/main || fail "Could not update Pars2Ray source"
+    install -m 0755 "$INSTALL_DIR/deploy/pars2ray" /usr/local/bin/pars2ray
     systemctl_cmd daemon-reload
     systemctl_cmd restart pars2ray-master.service pars2ray-worker.service
+    echo "[pars2ray] Updated successfully."
     ;;
-  start)
-    systemctl_cmd start pars2ray-master.service pars2ray-worker.service
-    ;;
-  stop)
-    systemctl_cmd stop pars2ray-worker.service pars2ray-master.service
-    ;;
-  restart)
-    systemctl_cmd restart pars2ray-master.service pars2ray-worker.service
-    ;;
-  status|ps)
-    systemctl_cmd --no-pager --full status pars2ray-master.service pars2ray-worker.service
-    ;;
-  logs)
-    journalctl -u pars2ray-master.service -u pars2ray-worker.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}"
-    ;;
-  master-logs)
-    journalctl -u pars2ray-master.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}"
-    ;;
-  worker-logs)
-    journalctl -u pars2ray-worker.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}"
-    ;;
-  change-password|password)
-    change_password
-    ;;
-  shell)
-    exec bash
-    ;;
-  config)
-    [[ -r "$ENV_FILE" ]] || fail "Environment file not found: $ENV_FILE"
-    sed -E 's/^(ADMIN_PASSWORD|JWT_SECRET|MASTER_SECRET)=.*/\1=***REDACTED***/' "$ENV_FILE"
-    ;;
+  start) systemctl_cmd start pars2ray-master.service pars2ray-worker.service ;;
+  stop) systemctl_cmd stop pars2ray-worker.service pars2ray-master.service ;;
+  restart) systemctl_cmd restart pars2ray-master.service pars2ray-worker.service ;;
+  status|ps) systemctl_cmd --no-pager --full status pars2ray-master.service pars2ray-worker.service ;;
+  logs) journalctl -u pars2ray-master.service -u pars2ray-worker.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}" ;;
+  master-logs) journalctl -u pars2ray-master.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}" ;;
+  worker-logs) journalctl -u pars2ray-worker.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}" ;;
+  change-password|password) change_password ;;
+  shell) exec bash ;;
+  config) [[ -r "$ENV_FILE" ]] || fail "Environment file not found: $ENV_FILE"; sed -E 's/^(ADMIN_PASSWORD|JWT_SECRET|MASTER_SECRET)=.*/\1=***REDACTED***/' "$ENV_FILE" ;;
   uninstall)
     read -r -p "Remove Pars2Ray services and data? [y/N] " answer
     [[ "$answer" =~ ^[Yy]$ ]] || exit 0
@@ -149,8 +133,8 @@ Pars2Ray management CLI
 
 Usage: pars2ray <command>
 
-  install            Run the native installer / repair an installation
-  update             Pull latest main and restart native services
+  install            Run the native installer
+  update             Pull latest main, refresh the CLI, and restart services
   start              Start Pars2Ray services
   stop               Stop Pars2Ray services
   restart            Restart Pars2Ray services
@@ -164,12 +148,7 @@ Usage: pars2ray <command>
   shell              Open a root shell
   uninstall          Remove Pars2Ray services (keeps project files)
   help               Show this help
-
-Password changes update the database securely, revoke existing refresh
-sessions, update installer credentials, and restart the services.
 EOF
     ;;
-  *)
-    fail "Unknown command '$1'. Run 'pars2ray help'."
-    ;;
+  *) fail "Unknown command '$1'. Run 'pars2ray help'." ;;
 esac
