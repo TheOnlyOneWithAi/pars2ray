@@ -29,11 +29,12 @@ class RefreshRequest(BaseModel):
 class UserCreate(BaseModel):
     username: str = Field(min_length=3, max_length=80, pattern=r"^[a-zA-Z0-9_.-]+$")
     email: str | None = Field(default=None, max_length=254)
-    password: str = Field(min_length=12, max_length=256)
+    password: str | None = Field(default=None, min_length=12, max_length=256)
     role: Literal["SUPER_ADMIN", "ADMIN", "OPERATOR", "RESELLER", "USER"] = "USER"
     is_active: bool = True
     plan_id: int | None = Field(default=None, ge=1)
     node_keys: list[str] = Field(default_factory=list, max_length=20)
+    inbound_ids: list[int] = Field(default_factory=list, max_length=32)
     quota_gb: float = Field(default=0, ge=0)
     duration_days: int = Field(default=0, ge=0, le=36500)
     expires_at: datetime | None = None

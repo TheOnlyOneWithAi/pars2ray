@@ -14,11 +14,20 @@ def test_user_create_accepts_subscription_provisioning_fields() -> None:
         role="USER",
         plan_id=1,
         node_keys=["US1", "DE1"],
+        inbound_ids=[1, 2],
         expires_at=utcnow() + timedelta(days=30),
     )
     assert payload.plan_id == 1
     assert payload.node_keys == ["US1", "DE1"]
+    assert payload.inbound_ids == [1, 2]
     assert payload.expires_at is not None
+
+
+def test_user_create_allows_no_email_or_password() -> None:
+    payload = UserCreate(username="alice")
+    assert payload.email is None
+    assert payload.password is None
+    assert payload.inbound_ids == []
 
 
 def test_user_create_rejects_invalid_plan_id() -> None:

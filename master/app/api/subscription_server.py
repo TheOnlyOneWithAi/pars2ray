@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import html
 import json
-from datetime import datetime, timezone
+from datetime import timezone
 from urllib.parse import quote
 from uuid import NAMESPACE_URL, uuid5
 
@@ -12,10 +12,10 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import current_user, require_roles
-from app.core.security import decrypt_secret, encrypt_secret, random_token, token_hash, utcnow
+from app.api.deps import require_roles
+from app.core.security import decrypt_secret, encrypt_secret, utcnow
 from app.db.base import get_db
-from app.models.entities import Node, Plan, Route, Subscription, SystemSetting, User
+from app.models.entities import Node, Route, Subscription, SystemSetting, User
 
 router = APIRouter(prefix="/api/v1", tags=["subscriptions"])
 public_router = APIRouter(tags=["subscriptions"])
@@ -62,12 +62,12 @@ def _public_subscription_base(request: Request, db: Session) -> str:
     return f"{request.url.scheme}://{host}{_subscription_path(db)}"
 
 
-def _subscription_rows(db: Session, token: str) -> tuple[Subscription, User] | None:
-    sub = db.scalar(select(Subscription).where(Subscription.token_hash == token_hash(token)))
-    if not sub or not sub.enabled:
+def _subscription_rows(db: Session, username: str) -> tuple[Subscription, User] | None:
+    user = db.scalar(select(User).where(User.username == username, User.is_active.is_(True)))
+    if not user:
         return None
-    user = db.get(User, sub.user_id)
-    if not user or not user.is_active:
+    sub = db.scalar(select(Subscription).where(Subscription.user_id == user.id, Subscription.enabled.is_(True)).order_by(Subscription.id.desc()))
+    if not sub:
         return None
     expires_at = sub.expires_at or user.expires_at
     if expires_at is not None and expires_at <= utcnow():
@@ -79,15 +79,15 @@ def _subscription_rows(db: Session, token: str) -> tuple[Subscription, User] | N
     return sub, user
 
 
-def _client_id(token: str) -> str:
-    return str(uuid5(NAMESPACE_URL, f"pars2ray:client:{token_hash(token)}"))
+def _client_id(username: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"pars2ray:client:{username.lower()}"))
 
 
-def _route_links(db: Session, sub: Subscription, user: User, token: str) -> list[str]:
+def _route_links(db: Session, sub: Subscription, user: User) -> list[str]:
     rows: list[str] = []
     routes = db.scalars(select(Route).where(Route.is_active.is_(True)).order_by(Route.id)).all()
     allowed = set(sub.node_keys)
-    client_id = _client_id(token)
+    client_id = _client_id(user.username)
     for route in routes:
         if allowed and not allowed.intersection(route.node_keys):
             continue
@@ -159,22 +159,22 @@ def _stored_links(sub: Subscription) -> list[str]:
     return links
 
 
-def _all_links(db: Session, sub: Subscription, user: User, token: str) -> list[str]:
+def _all_links(db: Session, sub: Subscription, user: User) -> list[str]:
     stored = _stored_links(sub)
-    return list(dict.fromkeys(stored + _route_links(db, sub, user, token)))
+    return list(dict.fromkeys(stored + _route_links(db, sub, user)))
 
 
 def _html_template(db: Session) -> str:
     return _setting(db, "subscription.html", """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{title}}</title><style>body{font-family:system-ui;max-width:900px;margin:40px auto;padding:20px;background:#0b1020;color:#fff}a{color:#7dd3fc;word-break:break-all}.card{background:#151b2e;padding:18px;border-radius:14px;margin:14px 0}pre{white-space:pre-wrap}</style></head><body><h1>{{title}}</h1><div class="card"><p>User: {{username}}</p><p>Traffic: {{used_gb}} / {{quota_gb}}</p><p>Expires: {{expires_at}}</p><p>Subscription: <a href="{{subscription_url}}">{{subscription_url}}</a></p></div><div class="card"><h2>Configurations</h2>{{configs_html}}</div></body></html>""")
 
 
-def _html_response(token: str, request: Request, db: Session, sub: Subscription, user: User, links: list[str]) -> HTMLResponse:
+def _html_response(username: str, request: Request, db: Session, sub: Subscription, user: User, links: list[str]) -> HTMLResponse:
     expires_at = sub.expires_at or user.expires_at
     quota = max(float(user.quota_gb or 0), 0.0)
     used = max(float(user.used_gb or sub.used_gb or 0), 0.0)
     quota_text = "Unlimited" if quota <= 0 else f"{quota:.2f} GB"
     expires_text = expires_at.isoformat() if expires_at else "Unlimited"
-    subscription_url = f"{_public_subscription_base(request, db)}{quote(token, safe='')}"
+    subscription_url = f"{_public_subscription_base(request, db)}{quote(username, safe='')}"
     configs_html = "".join(f'<a href="{html.escape(link, quote=True)}">{html.escape(link)}</a><br>' for link in links) or "<p>No active configurations.</p>"
     values = {"title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")), "username": html.escape(user.username), "used_gb": f"{used:.2f} GB", "quota_gb": quota_text, "expires_at": html.escape(expires_text), "subscription_url": html.escape(subscription_url, quote=True), "configs_html": configs_html}
     rendered = _html_template(db)
@@ -221,26 +221,26 @@ def update_subscription_settings(payload: dict, db: Session = Depends(get_db), u
     return get_subscription_settings(db=db, user=user)
 
 
-@public_router.get("/link/{token}")
-@public_router.get("/sub/{token}")
-def subscription(token: str, request: Request, db: Session = Depends(get_db)):
-    found = _subscription_rows(db, token)
+@public_router.get("/link/{username}")
+@public_router.get("/sub/{username}")
+def subscription(username: str, request: Request, db: Session = Depends(get_db)):
+    found = _subscription_rows(db, username)
     if not found:
         raise HTTPException(status_code=404, detail="subscription_not_found")
     sub, user = found
-    links = _all_links(db, sub, user, token)
+    links = _all_links(db, sub, user)
     if "text/html" in (request.headers.get("accept") or "").lower() or request.query_params.get("html") == "1":
-        return _html_response(token, request, db, sub, user, links)
+        return _html_response(username, request, db, sub, user, links)
     body = "\n".join(links)
     return PlainTextResponse(base64.b64encode(body.encode()).decode(), headers=_headers(db, user, sub), media_type="text/plain; charset=utf-8")
 
 
-@public_router.get("/link/{token}/raw")
-@public_router.get("/sub/{token}/raw")
-def subscription_raw(token: str, request: Request, db: Session = Depends(get_db)) -> PlainTextResponse:
-    found = _subscription_rows(db, token)
+@public_router.get("/link/{username}/raw")
+@public_router.get("/sub/{username}/raw")
+def subscription_raw(username: str, request: Request, db: Session = Depends(get_db)) -> PlainTextResponse:
+    found = _subscription_rows(db, username)
     if not found:
         raise HTTPException(status_code=404, detail="subscription_not_found")
     sub, user = found
-    body = "\n".join(_all_links(db, sub, user, token))
+    body = "\n".join(_all_links(db, sub, user))
     return PlainTextResponse(body, headers=_headers(db, user, sub), media_type="text/plain; charset=utf-8")

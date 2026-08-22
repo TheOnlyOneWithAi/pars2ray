@@ -36,7 +36,7 @@ class InboundSelection(BaseModel):
 class ClientCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     email: str | None = Field(default=None, max_length=254)
-    inbound_ids: list[int] = Field(min_length=1, max_length=32)
+    inbound_ids: list[int] = Field(default_factory=list, max_length=32)
 
 
 def _ensure(db: Session) -> None:
@@ -149,13 +149,19 @@ def get_inbounds(db: Session = Depends(get_db), user: User = Depends(current_use
 @router.post("/users/clients", tags=["client-users"])
 def create_client_user(payload: ClientCreate, db: Session = Depends(get_db), actor: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "OPERATOR"))) -> dict:
     _ensure(db)
+    available = list_inbounds(db)
+    requested_ids = list(dict.fromkeys(payload.inbound_ids))
+    if not requested_ids:
+        requested_ids = [int(row["id"]) for row in available if row["status"] == "ACTIVE"]
+        if not requested_ids:
+            requested_ids = [int(row["id"]) for row in available]
     selected = []
-    for inbound_id in sorted(set(payload.inbound_ids)):
+    for inbound_id in sorted(set(requested_ids)):
         row = select_inbound(db, inbound_id)
         if not row:
             raise HTTPException(status_code=404, detail=f"inbound_not_found:{inbound_id}")
         selected.append(row)
-    client = create_client(db, payload.name, payload.email, payload.inbound_ids)
+    client = create_client(db, payload.name, payload.email, requested_ids)
     nodes = {node.node_key: node for node in db.scalars(select(Node).where(Node.node_key.in_([row["node_key"] for row in selected]))).all()}
     links = _config_links(client, selected, nodes)
     return {"id": client["id"], "name": client["name"], "email": client["email"], "uuid": client["uuid"], "inbound_ids": client["inbound_ids"], "configs": links}
