@@ -4,7 +4,7 @@ import base64
 import html
 import json
 from datetime import timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -15,7 +15,8 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_roles
 from app.core.security import decrypt_secret, encrypt_secret, utcnow
 from app.db.base import get_db
-from app.models.entities import Node, Route, Subscription, SystemSetting, User
+from app.models.entities import Node, Plan, Route, Subscription, SystemSetting, User
+from app.services.inbound_store import inbounds as inbound_profiles
 
 router = APIRouter(prefix="/api/v1", tags=["subscriptions"])
 public_router = APIRouter(tags=["subscriptions"])
@@ -69,11 +70,14 @@ def _subscription_rows(db: Session, username: str) -> tuple[Subscription, User] 
     sub = db.scalar(select(Subscription).where(Subscription.user_id == user.id, Subscription.enabled.is_(True)).order_by(Subscription.id.desc()))
     if not sub:
         return None
-    expires_at = sub.expires_at or user.expires_at
+    expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
     if expires_at is not None and expires_at <= utcnow():
         return None
-    quota_gb = max(float(user.quota_gb or 0), 0.0)
-    used_gb = max(float(user.used_gb or sub.used_gb or 0), 0.0)
+    # Direct user limits are authoritative for plan-less subscriptions. Plans
+    # remain templates for subscriptions created from the client manager.
+    plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+    quota_gb = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
+    used_gb = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
     if quota_gb > 0 and used_gb >= quota_gb:
         return None
     return sub, user
@@ -83,27 +87,26 @@ def _client_id(username: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"pars2ray:client:{username.lower()}"))
 
 
+def _endpoint_host(endpoint: str) -> str:
+    value = (endpoint or "").strip()
+    parsed = urlsplit(value if "://" in value else f"//{value}")
+    return parsed.hostname or ""
+
+
 def _node_server(db: Session, route: Route) -> str:
-    """Return the node endpoint host, never a transport Host/SNI value."""
     for node_key in route.node_keys:
         node = db.scalar(select(Node).where(Node.node_key == node_key))
-        if not node or not node.endpoint:
-            continue
-        endpoint = node.endpoint.strip().split("://", 1)[-1].split("/", 1)[0]
-        if endpoint.startswith("["):
-            end = endpoint.find("]")
-            if end >= 0:
-                return endpoint[1:end]
-        if endpoint.count(":") == 1:
-            return endpoint.rsplit(":", 1)[0]
-        return endpoint
+        if node and node.endpoint:
+            host = _endpoint_host(node.endpoint)
+            if host:
+                return host
     return ""
 
 
 def _route_links(db: Session, sub: Subscription, user: User) -> list[str]:
     rows: list[str] = []
     routes = db.scalars(select(Route).where(Route.is_active.is_(True)).order_by(Route.id)).all()
-    allowed = set(sub.node_keys)
+    allowed = set(sub.node_keys or [])
     client_id = _client_id(user.username)
     for route in routes:
         if allowed and not allowed.intersection(route.node_keys):
@@ -112,15 +115,9 @@ def _route_links(db: Session, sub: Subscription, user: User) -> list[str]:
             cfg = json.loads(decrypt_secret(route.config_enc)) if route.config_enc else {}
         except Exception:
             cfg = {}
-
-        # The node endpoint is the authoritative destination. `host` is a
-        # transport Host header and must not become the VLESS destination.
-        server = _node_server(db, route)
-        if not server:
-            server = str(cfg.get("server_address") or cfg.get("address") or cfg.get("server") or "").strip()
+        server = _node_server(db, route) or str(cfg.get("server_address") or cfg.get("address") or cfg.get("server") or "").strip()
         if not server:
             continue
-
         port = int(cfg.get("port", 443))
         name = quote(route.name, safe="")
         transport = route.transport
@@ -158,7 +155,67 @@ def _route_links(db: Session, sub: Subscription, user: User) -> list[str]:
     return rows
 
 
-def _stored_links(sub: Subscription) -> list[str]:
+def _inbound_links(db: Session, sub: Subscription, user: User) -> list[str]:
+    raw = []
+    if not sub.config_enc:
+        return raw
+    try:
+        data = json.loads(decrypt_secret(sub.config_enc))
+    except Exception:
+        return raw
+    ids = data.get("inbound_ids", []) if isinstance(data, dict) else []
+    if not isinstance(ids, list):
+        return raw
+    inbound_rows = db.execute(select(inbound_profiles).where(inbound_profiles.c.id.in_([int(i) for i in ids if str(i).isdigit()]))).mappings().all() if ids else []
+    node_keys = {str(row["node_key"]) for row in inbound_rows}
+    nodes = {n.node_key: n for n in db.scalars(select(Node).where(Node.node_key.in_(node_keys))).all()} if node_keys else {}
+    client_id = _client_id(user.username)
+    for inbound in inbound_rows:
+        node = nodes.get(inbound["node_key"])
+        if not node:
+            continue
+        cfg = inbound["config_json"] or {}
+        server = _endpoint_host(node.endpoint)
+        if not server:
+            continue
+        port = int(inbound["port"])
+        transport = str(inbound["transport"])
+        security = str(inbound["security"])
+        params = {"type": "ws" if transport == "websocket" else transport, "security": security}
+        if cfg.get("server_name"):
+            params["sni"] = str(cfg["server_name"])
+        if transport in {"websocket", "httpupgrade", "xhttp"}:
+            params["path"] = str(cfg.get("path", "/"))
+            if cfg.get("host"):
+                params["host"] = str(cfg["host"])
+        if transport == "grpc":
+            params["serviceName"] = str(cfg.get("service_name", "pars2ray"))
+        if security == "reality":
+            reality = cfg.get("reality") or {}
+            if reality.get("fingerprint"):
+                params["fp"] = str(reality["fingerprint"])
+            if reality.get("public_key"):
+                params["pbk"] = str(reality["public_key"])
+            if reality.get("short_id"):
+                params["sid"] = str(reality["short_id"])
+        query = "&".join(f"{quote(str(k))}={quote(str(v))}" for k, v in params.items())
+        name = quote(str(inbound["name"]), safe="")
+        protocol = str(inbound["protocol"])
+        if protocol == "vless":
+            raw.append(f"vless://{client_id}@{server}:{port}?{query}#{name}")
+        elif protocol == "vmess":
+            payload = {"v": "2", "ps": str(inbound["name"]), "add": server, "port": str(port), "id": client_id, "aid": "0", "net": transport, "type": "none", "host": str(cfg.get("host", "")), "path": str(cfg.get("path", "/")), "tls": "tls" if security == "tls" else "", "sni": str(cfg.get("server_name", ""))}
+            raw.append("vmess://" + base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
+        elif protocol == "trojan":
+            raw.append(f"trojan://{client_id}@{server}:{port}?{query}#{name}")
+        elif protocol == "shadowsocks":
+            method = str(cfg.get("method", "aes-128-gcm"))
+            auth = base64.urlsafe_b64encode(f"{method}:{client_id}".encode()).decode().rstrip("=")
+            raw.append(f"ss://{auth}@{server}:{port}#{name}")
+    return raw
+
+
+def _stored_links(db: Session, sub: Subscription, user: User) -> list[str]:
     if not sub.config_enc:
         return []
     try:
@@ -175,12 +232,11 @@ def _stored_links(sub: Subscription) -> list[str]:
             for row in direct:
                 if isinstance(row, dict) and row.get("enabled", True) and isinstance(row.get("link"), str) and "://" in row["link"]:
                     links.append(row["link"].strip())
-    return links
+    return list(dict.fromkeys(links + _inbound_links(db, sub, user)))
 
 
 def _all_links(db: Session, sub: Subscription, user: User) -> list[str]:
-    stored = _stored_links(sub)
-    return list(dict.fromkeys(stored + _route_links(db, sub, user)))
+    return list(dict.fromkeys(_stored_links(db, sub, user) + _route_links(db, sub, user)))
 
 
 def _html_template(db: Session) -> str:
@@ -190,16 +246,16 @@ def _html_template(db: Session) -> str:
 def _render_template(template: str, values: dict[str, str]) -> str:
     rendered = template
     for key, value in values.items():
-        variants = {"{{" + key + "}}", "{{" + key.replace("_", r"\_") + "}}", quote("{{" + key + "}}", safe=""), quote("{{" + key.replace("_", r"\_") + "}}", safe="")}
-        for placeholder in variants:
+        for placeholder in ("{{" + key + "}}", "{{" + key.replace("_", r"\_") + "}}"):
             rendered = rendered.replace(placeholder, value)
     return rendered
 
 
 def _html_response(username: str, request: Request, db: Session, sub: Subscription, user: User, links: list[str]) -> HTMLResponse:
-    expires_at = sub.expires_at or user.expires_at
-    quota = max(float(user.quota_gb or 0), 0.0)
-    used = max(float(user.used_gb or sub.used_gb or 0), 0.0)
+    expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
+    plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+    quota = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
+    used = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
     unlimited = quota <= 0
     remaining = max(quota - used, 0.0) if not unlimited else 0.0
     remaining_percent = 100.0 if unlimited else max(min((remaining / quota) * 100.0, 100.0), 0.0)
@@ -207,14 +263,15 @@ def _html_response(username: str, request: Request, db: Session, sub: Subscripti
     subscription_url = f"{_public_subscription_base(request, db)}{quote(username, safe='')}"
     raw_url = subscription_url.rstrip("/") + "/raw"
     configs_html = "".join(f'<a href="{html.escape(link, quote=True)}">{html.escape(link)}</a><br>' for link in links) or "<p>No active configurations.</p>"
-    values = {"title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")), "username": html.escape(user.username), "used_gb": f"{used:.2f}", "quota_gb": "Unlimited" if unlimited else f"{quota:.2f}", "remaining_gb": "Unlimited" if unlimited else f"{remaining:.2f}", "remaining_percent": "100" if unlimited else f"{remaining_percent:.1f}", "expires_at": html.escape(expires_at.isoformat() if expires_at else "Unlimited"), "days_remaining": str(days_remaining), "subscription_url": html.escape(subscription_url, quote=True), "raw_url": html.escape(raw_url, quote=True), "vless_links": configs_html, "connection_instructions": "<ol><li>Add the subscription URL to your Xray/V2Ray compatible client.</li><li>Alternatively import an individual configuration above.</li><li>Refresh the subscription when configurations change.</li><li>Keep the subscription URL private.</li></ol>", "configs": html.escape("\n".join(links)), "config_count": str(len(links))}
+    values = {"title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")), "username": html.escape(user.username), "used_gb": f"{used:.2f}", "quota_gb": "Unlimited" if unlimited else f"{quota:.2f}", "remaining_gb": "Unlimited" if unlimited else f"{remaining:.2f}", "remaining_percent": "100" if unlimited else f"{remaining_percent:.1f}", "expires_at": html.escape(expires_at.isoformat() if expires_at else "Unlimited"), "days_remaining": str(days_remaining), "subscription_url": html.escape(subscription_url, quote=True), "raw_url": html.escape(raw_url, quote=True), "vless_links": configs_html, "connection_instructions": "<ol><li>Add the subscription URL to your Xray/V2Ray compatible client.</li><li>Alternatively import an individual configuration above.</li><li>Refresh the subscription when configurations change.</li><li>Keep the subscription URL private.</li></ol>", "configs": html.escape("\n".join(links))}
     return HTMLResponse(_render_template(_html_template(db), values))
 
 
 def _headers(db: Session, user: User, sub: Subscription) -> dict[str, str]:
-    quota = max(float(user.quota_gb or 0), 0.0)
-    used = max(float(user.used_gb or sub.used_gb or 0), 0.0)
-    expires_at = sub.expires_at or user.expires_at
+    plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+    quota = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
+    used = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
+    expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
     expire = int(expires_at.replace(tzinfo=timezone.utc).timestamp()) if expires_at else 0
     total = int(quota * 1024 * 1024 * 1024) if quota > 0 else 0
     used_bytes = int(used * 1024 * 1024 * 1024)
