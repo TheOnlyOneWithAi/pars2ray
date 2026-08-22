@@ -19,6 +19,7 @@ from app.api.protocols import public_router, router as protocols_router
 from app.api.ai_settings import router as ai_settings_router
 from app.api.node_management import router as node_management_router
 from app.api.xray_management import router as xray_management_router
+from app.api.user_provisioning import router as user_provisioning_router
 from app.core.config import settings
 from app.db.base import SessionLocal
 from app.services.auth import ensure_seed
@@ -99,6 +100,7 @@ def readiness() -> Response:
         db.close()
 
 
+app.include_router(user_provisioning_router)
 app.include_router(ai_settings_router)
 app.include_router(ai_config_router)
 app.include_router(router)
