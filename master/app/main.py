@@ -106,8 +106,10 @@ app.include_router(ai_config_router)
 app.include_router(subscription_router)
 app.include_router(router)
 app.include_router(protocols_router)
-app.include_router(subscription_public_router)
+# Canonical token routes must be registered before the legacy username routes.
+# The compatibility handlers also preserve existing /link/<username> URLs.
 app.include_router(secure_subscription_public_router)
+app.include_router(subscription_public_router)
 app.include_router(node_management_router)
 app.include_router(xray_management_router)
 app.include_router(client_manager_router)
