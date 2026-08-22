@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Pars2Ray Native Installer v5
-# Installs the native stack and a persistent management CLI.
-
 APP="pars2ray"
 INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
 DATA_DIR="${PARS2RAY_DATA_DIR:-${INSTALL_DIR}/data}"
@@ -70,7 +67,9 @@ EOF
 setup_python(){ VENV_DIR="${INSTALL_DIR}/.venv"; require_timeout; [[ -x "$VENV_DIR/bin/python" ]] || python3 -m venv "$VENV_DIR" || die "Could not create Python virtual environment"; local pip_log="${TMPDIR:-/tmp}/pars2ray-pip.$$"; run_bounded "$PIP_TIMEOUT" "Upgrading pip/wheel" "$pip_log" "$VENV_DIR/bin/python" -m pip install --upgrade pip wheel || die "Could not upgrade pip/wheel"; run_bounded "$PIP_TIMEOUT" "Installing Python dependencies" "$pip_log" "$VENV_DIR/bin/pip" install -q -r "$INSTALL_DIR/master/requirements.txt" || die "Python dependency installation failed"; rm -f "$pip_log"; ok "Application dependencies ready"; }
 migrate(){ local venv="$1" migrate_log="${TMPDIR:-/tmp}/pars2ray-migrate.$$"; [[ -r "$ENV_FILE" ]] || die "Pars2Ray environment file is missing"; set -a; . "$ENV_FILE"; set +a; export DATABASE_URL="$(read_env DATABASE_URL)"; export PYTHONPATH="$INSTALL_DIR/master"; [[ -n "${JWT_SECRET:-}" && -n "${MASTER_SECRET:-}" && -n "${ADMIN_PASSWORD:-}" ]] || die "Required application secrets are missing"; cd "$INSTALL_DIR"; run_bounded 120 "Applying database migrations" "$migrate_log" "$venv/bin/alembic" upgrade head || die "Database migration failed"; rm -f "$migrate_log"; ok "Database ready"; }
 
-write_services(){ local venv="$1"; cat > /etc/systemd/system/pars2ray-master.service <<EOF
+write_services(){
+  local venv="$1"
+  cat > /etc/systemd/system/pars2ray-master.service <<EOF
 [Unit]
 Description=Pars2Ray Master Panel
 After=network-online.target
@@ -93,7 +92,7 @@ ReadWritePaths=$DATA_DIR
 [Install]
 WantedBy=multi-user.target
 EOF
- cat > /etc/systemd/system/pars2ray-worker.service <<EOF
+  cat > /etc/systemd/system/pars2ray-worker.service <<EOF
 [Unit]
 Description=Pars2Ray Worker
 After=network-online.target pars2ray-master.service
@@ -116,12 +115,52 @@ ReadWritePaths=$DATA_DIR
 [Install]
 WantedBy=multi-user.target
 EOF
-  install -d -m 0755 /etc/nginx/conf.d /var/www/letsencrypt "$DATA_DIR"; printf 'include %s/panel-nginx.conf;\n' "$DATA_DIR" > /etc/nginx/conf.d/pars2ray.conf; rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true; systemctl daemon-reload; systemctl enable pars2ray-master pars2ray-worker nginx >/dev/null; systemctl restart nginx; ok "systemd services and panel reverse proxy installed"; }
+  systemctl daemon-reload
+  systemctl enable pars2ray-master pars2ray-worker >/dev/null || die "Could not enable Pars2Ray services"
+
+  install -d -m 0755 /etc/nginx/conf.d /etc/nginx/sites-enabled /var/www/letsencrypt "$DATA_DIR"
+  cat > "$DATA_DIR/panel-nginx.conf" <<EOF
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    client_max_body_size 50m;
+    location / {
+        proxy_pass http://127.0.0.1:${PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \"upgrade\";
+    }
+}
+EOF
+  cat > /etc/nginx/conf.d/pars2ray.conf <<EOF
+include ${DATA_DIR}/panel-nginx.conf;
+EOF
+  rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+
+  if nginx -t >/tmp/pars2ray-nginx-test.$$ 2>&1; then
+    if systemctl enable nginx >/dev/null 2>&1 && systemctl restart nginx >/dev/null 2>&1; then
+      ok "nginx reverse proxy installed and running"
+    else
+      warn "nginx is installed but could not be started; Pars2Ray services and CLI will continue"
+      tail -n 80 /tmp/pars2ray-nginx-test.$$ >&2 || true
+    fi
+  else
+    warn "nginx configuration is invalid; leaving nginx stopped and continuing with Pars2Ray"
+    tail -n 80 /tmp/pars2ray-nginx-test.$$ >&2 || true
+  fi
+  rm -f /tmp/pars2ray-nginx-test.$$
+}
 
 install_cli(){
   [[ -f "$CLI_SOURCE" ]] || die "Management CLI source missing: $CLI_SOURCE"
   install -m 0755 "$CLI_SOURCE" /usr/local/bin/pars2ray
-  if ! /usr/local/bin/pars2ray help >/dev/null 2>&1; then die "Installed pars2ray CLI failed its self-check"; fi
+  [[ -x /usr/local/bin/pars2ray ]] || die "Could not install management CLI"
+  /usr/local/bin/pars2ray help >/dev/null 2>&1 || die "Installed pars2ray CLI failed its self-check"
   ok "Management CLI installed: pars2ray change-password"
 }
 
@@ -131,5 +170,5 @@ EOF
  sysctl --system >/dev/null 2>&1 || true; ok "TCP BBR enabled for supported kernels"; fi; }
 health_check(){ local attempt url="http://127.0.0.1:${PORT}/health"; systemctl restart pars2ray-master || { journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray master service"; }; for attempt in $(seq 1 45); do if curl -fsS --connect-timeout 1 --max-time 2 "$url" >/dev/null 2>&1; then ok "Panel is responding"; systemctl restart pars2ray-worker || { journalctl -u pars2ray-worker -n 100 --no-pager >&2 || true; die "Could not start Pars2Ray worker service"; }; return 0; fi; sleep 1; done; journalctl -u pars2ray-master -n 100 --no-pager >&2 || true; die "Panel did not become ready. Run: pars2ray logs"; }
 print_result(){ local host user; host="${PARS2RAY_PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}') }"; host="${host// /}"; host="${host:-localhost}"; user="$(read_env ADMIN_USER)"; printf '\n\033[1;32m==============================================\033[0m\n Pars2Ray is installed and running\n==============================================\n Panel:       http://%s:%s\n Username:    %s\n Credentials: %s\n CLI:         pars2ray change-password\n Logs:        pars2ray logs\n\n' "$host" "$PORT" "$user" "$CREDENTIALS_FILE"; }
-main(){ install_packages; fetch_source; ensure_defaults; first_run; setup_python; migrate "$VENV_DIR"; write_services "$VENV_DIR"; install_cli; tune_network; health_check; print_result; }
+main(){ install_packages; fetch_source; ensure_defaults; first_run; setup_python; migrate "$VENV_DIR"; install_cli; write_services "$VENV_DIR"; tune_network; health_check; print_result; }
 main "$@"
