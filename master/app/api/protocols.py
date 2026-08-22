@@ -41,18 +41,25 @@ def _client_id(token_hash_value: str) -> str:
 
 
 def _subscription_rows(db: Session, token: str) -> tuple[Subscription, User] | None:
-    sub = db.scalar(select(Subscription).where(Subscription.token_hash == token_hash(token)))
-    if not sub or not sub.enabled or sub.expires_at <= utcnow():
+    sub = db.scalar(select(Subscription).where(Subscription.token_hash == token_hash(token), Subscription.enabled.is_(True)))
+    if not sub:
         return None
     user = db.get(User, sub.user_id)
     if not user or not user.is_active:
         return None
-    plan = db.get(Plan, sub.plan_id)
-    quota_gb = max(float(plan.quota_gb if plan else 0), 0.0)
-    used_gb = max(float(sub.used_gb or 0), 0.0)
+    expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
+    if expires_at is not None and expires_at <= utcnow():
+        return None
+    plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+    quota_gb = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
+    used_gb = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
     if quota_gb > 0 and used_gb >= quota_gb:
         return None
     return sub, user
+
+
+def _effective_expiry(sub: Subscription, user: User):
+    return sub.expires_at if sub.expires_at is not None else user.expires_at
 
 
 def _template(db: Session) -> str:
@@ -68,7 +75,7 @@ def _render(template: str, values: dict[str, str]) -> str:
 
 def _routes_for_subscription(db: Session, sub: Subscription) -> list[Route]:
     routes = db.scalars(select(Route).where(Route.is_active.is_(True)).order_by(Route.id)).all()
-    allowed = set(sub.node_keys)
+    allowed = set(sub.node_keys or [])
     return [route for route in routes if not allowed or allowed.intersection(route.node_keys)]
 
 
@@ -103,6 +110,8 @@ def _connection_lines(db: Session, sub: Subscription, token: str) -> list[str]:
             node = db.scalar(select(Node).where(Node.node_key == route.node_keys[0])) if route.node_keys else None
             if node:
                 server = node.endpoint.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0]
+        if not server:
+            continue
         port = int(data.get("port", 443))
         name = quote(route.name, safe="")
         if route.protocol == "vless":
@@ -167,9 +176,8 @@ def create_custom_config(payload: CustomConfigRequest, request: Request, db: Ses
     from app.services.audit import record
     record(db, user, "subscription.custom_config", "subscription", str(sub.id), request.client.host if request.client else "", {"protocol": payload.protocol, "count": len(cleaned)})
     db.commit()
-    scheme = request.url.scheme
-    host = request.headers.get("host") or request.url.netloc
-    link = f"{scheme}://{host}/link/{raw_token}"
+    origin = f"{request.url.scheme}://{request.headers.get('host') or request.url.netloc}"
+    link = f"{origin}/s/{quote(raw_token, safe='')}"
     raw_link = f"{link}/raw"
     return {"ok": True, "subscription_id": sub.id, "protocol": payload.protocol, "config_count": len(cleaned), "subscription_url": link, "raw_url": raw_link, "message": "inbound_free_config_saved"}
 
@@ -181,8 +189,23 @@ async def build_route_config(route_id: int, payload: ConfigBuildRequest, db: Ses
         raise HTTPException(status_code=404, detail="route_not_found")
     clients = payload.clients
     if not clients:
-        subs = db.scalars(select(Subscription).where(Subscription.enabled.is_(True), Subscription.expires_at > utcnow())).all()
-        clients = [{"id": _client_id(sub.token_hash), "email": f"sub-{sub.id}"} for sub in subs if not sub.node_keys or set(sub.node_keys).intersection(route.node_keys)]
+        candidates = db.scalars(select(Subscription).where(Subscription.enabled.is_(True))).all()
+        clients = []
+        now = utcnow()
+        for sub in candidates:
+            owner = db.get(User, sub.user_id)
+            if not owner or not owner.is_active:
+                continue
+            expires_at = _effective_expiry(sub, owner)
+            if expires_at is not None and expires_at <= now:
+                continue
+            plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+            quota = float(plan.quota_gb if plan is not None else owner.quota_gb or 0)
+            used = max(float(owner.used_gb or 0), float(sub.used_gb or 0))
+            if quota > 0 and used >= quota:
+                continue
+            if not sub.node_keys or set(sub.node_keys).intersection(route.node_keys):
+                clients.append({"id": _client_id(sub.token_hash), "email": f"sub-{sub.id}"})
     try:
         config = build_config({"name": route.name, "core": route.core, "protocol": route.protocol, "transport": route.transport, "config": _decrypt_route_config(route)}, clients)
     except ValueError as exc:
@@ -253,17 +276,18 @@ def subscription_page(token: str, request: Request, db: Session = Depends(get_db
         raise HTTPException(status_code=404, detail="subscription_not_found")
     sub, user = found
     lines = _connection_lines(db, sub, token)
-    plan = db.get(Plan, sub.plan_id)
-    quota_gb = max(float(plan.quota_gb if plan else 0), 0.0)
-    used_gb = max(float(sub.used_gb or 0), 0.0)
+    plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+    quota_gb = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
+    used_gb = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
     unlimited = quota_gb <= 0
     remaining_gb = max(quota_gb - used_gb, 0.0) if not unlimited else 0.0
     remaining_percent = 100.0 if unlimited else max(min((remaining_gb / quota_gb) * 100.0, 100.0), 0.0)
+    expires_at = _effective_expiry(sub, user)
     now = utcnow()
-    days_remaining = max((sub.expires_at - now).days, 0)
+    days_remaining = max((expires_at - now).days, 0) if expires_at else 0
     subscription_url = str(request.url)
     raw_url = subscription_url.rstrip("/") + "/raw"
-    values = {"title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")), "username": html.escape(user.username), "expires_at": html.escape(sub.expires_at.isoformat()), "token": html.escape(token), "subscription_url": html.escape(subscription_url, quote=True), "raw_url": html.escape(raw_url, quote=True), "configs": html.escape("\n".join(lines)), "config_count": str(len(lines)), "used_gb": f"{used_gb:.2f}", "quota_gb": "Unlimited" if unlimited else f"{quota_gb:.2f}", "remaining_gb": "Unlimited" if unlimited else f"{remaining_gb:.2f}", "remaining_percent": "100" if unlimited else f"{remaining_percent:.1f}", "days_remaining": str(days_remaining), "vless_links": _subscription_html_links(lines), "connection_instructions": _connection_instructions_html()}
+    values = {"title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")), "username": html.escape(user.username), "expires_at": html.escape(expires_at.isoformat() if expires_at else "Unlimited"), "token": html.escape(token), "subscription_url": html.escape(subscription_url, quote=True), "raw_url": html.escape(raw_url, quote=True), "configs": html.escape("\n".join(lines)), "config_count": str(len(lines)), "used_gb": f"{used_gb:.2f}", "quota_gb": "Unlimited" if unlimited else f"{quota_gb:.2f}", "remaining_gb": "Unlimited" if unlimited else f"{remaining_gb:.2f}", "remaining_percent": "100" if unlimited else f"{remaining_percent:.1f}", "days_remaining": str(days_remaining), "vless_links": _subscription_html_links(lines), "connection_instructions": _connection_instructions_html()}
     return HTMLResponse(_render(_template(db), values))
 
 
