@@ -15,6 +15,7 @@ from app.db.base import get_db
 from app.models.entities import Node, User
 from app.services import agent_client
 from app.services.candidate_engine import generate
+from app.services.config_builder import build_config
 from app.services.inbound_store import create_client, create_inbound, delete_client, ensure_tables, list_clients, list_inbounds, select_inbound
 
 router = APIRouter(prefix="/api/v1")
@@ -74,24 +75,30 @@ def _vless_link(client: dict, inbound: dict, node: Node) -> str:
     return f"vless://{client['uuid']}@{host}:{inbound['port']}?{'&'.join(f'{quote(k)}={quote(v)}' for k,v in query.items())}#{label}"
 
 
+def _core_config(client: dict, inbound: dict) -> dict:
+    route = {"name": inbound["name"], "tag": inbound["name"], "core": inbound["core"], "protocol": inbound["protocol"], "transport": inbound["transport"], "config": {**(inbound["config_json"] or {}), "port": inbound["port"], "security": inbound["security"]}}
+    return build_config(route, [{"id": client["uuid"], "email": client.get("email") or client["name"]}])
+
+
 def _config_links(client: dict, selected: list[dict], nodes: dict[str, Node]) -> list[dict]:
     links: list[dict] = []
     for inbound in selected:
         node = nodes.get(inbound["node_key"])
         if not node:
             continue
+        config = _core_config(client, inbound)
         if inbound["protocol"] == "vless":
-            links.append({"inbound_id": inbound["id"], "protocol": "vless", "link": _vless_link(client, inbound, node)})
+            links.append({"inbound_id": inbound["id"], "protocol": "vless", "link": _vless_link(client, inbound, node), "config": config})
         elif inbound["protocol"] == "trojan":
             host = node.endpoint.rsplit(":", 1)[0] if ":" in node.endpoint else node.endpoint
-            links.append({"inbound_id": inbound["id"], "protocol": "trojan", "link": f"trojan://{client['uuid']}@{host}:{inbound['port']}#{quote(client['name'])}"})
+            links.append({"inbound_id": inbound["id"], "protocol": "trojan", "link": f"trojan://{client['uuid']}@{host}:{inbound['port']}#{quote(client['name'])}", "config": config})
         elif inbound["protocol"] == "vmess":
             host = node.endpoint.rsplit(":", 1)[0] if ":" in node.endpoint else node.endpoint
             payload = {"v": "2", "ps": client["name"], "add": host, "port": inbound["port"], "id": client["uuid"], "aid": 0, "net": inbound["transport"], "type": "none", "host": (inbound["config_json"] or {}).get("host", ""), "path": (inbound["config_json"] or {}).get("path", "/"), "tls": "tls" if inbound["security"] == "tls" else ""}
             raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
-            links.append({"inbound_id": inbound["id"], "protocol": "vmess", "link": f"vmess://{raw}"})
+            links.append({"inbound_id": inbound["id"], "protocol": "vmess", "link": f"vmess://{raw}", "config": config})
         else:
-            links.append({"inbound_id": inbound["id"], "protocol": inbound["protocol"], "link": "", "note": "Use the generated panel config JSON for this protocol."})
+            links.append({"inbound_id": inbound["id"], "protocol": inbound["protocol"], "link": "", "note": "Use the generated panel config JSON for this protocol.", "config": config})
     return links
 
 
