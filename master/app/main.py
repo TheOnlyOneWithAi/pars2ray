@@ -13,6 +13,7 @@ from starlette.responses import PlainTextResponse
 
 from app.api.ai_config import router as ai_config_router
 from app.api.client_manager import router as client_manager_router
+from app.api.direct_configs import router as direct_configs_router
 from app.api.inbounds import router as inbounds_router
 from app.api.routes import router
 from app.api.protocols import public_router, router as protocols_router
@@ -110,6 +111,7 @@ app.include_router(node_management_router)
 app.include_router(xray_management_router)
 app.include_router(client_manager_router)
 app.include_router(inbounds_router)
+app.include_router(direct_configs_router)
 
 STATIC = Path(__file__).parent / "static"
 if STATIC.exists():
