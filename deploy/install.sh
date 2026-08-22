@@ -12,6 +12,7 @@ REPOSITORY="${PARS2RAY_REPOSITORY:-https://github.com/TheOnlyOneWithAi/pars2ray.
 REF="${PARS2RAY_REF:-main}"
 PORT="${PARS2RAY_PANEL_PORT:-8000}"
 VENV_DIR="${INSTALL_DIR}/.venv"
+SERVICE_USER="pars2ray"
 APT_TIMEOUT="${PARS2RAY_APT_TIMEOUT:-180}"
 NETWORK_TIMEOUT="${PARS2RAY_NETWORK_TIMEOUT:-180}"
 PIP_TIMEOUT="${PARS2RAY_PIP_TIMEOUT:-300}"
@@ -69,26 +70,47 @@ migrate(){ local venv="$1" migrate_log="${TMPDIR:-/tmp}/pars2ray-migrate.$$"; [[
 
 write_services(){
   local venv="$1"
+  if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+    useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin --user-group "$SERVICE_USER" || die "Could not create service account"
+  fi
+  install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$DATA_DIR"
+  chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
   cat > /etc/systemd/system/pars2ray-master.service <<EOF
 [Unit]
 Description=Pars2Ray Master Panel
 After=network-online.target
 Wants=network-online.target
+
 [Service]
 Type=simple
-User=root
+User=$SERVICE_USER
+Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=$ENV_FILE
 Environment=PYTHONPATH=$INSTALL_DIR/master
-ExecStart=$venv/bin/uvicorn app.main:app --app-dir $INSTALL_DIR/master --host 0.0.0.0 --port $PORT --proxy-headers --timeout-keep-alive 30 --limit-concurrency 1024
+ExecStart=$venv/bin/uvicorn app.main:app --app-dir $INSTALL_DIR/master --host 127.0.0.1 --port $PORT --proxy-headers --timeout-keep-alive 30 --limit-concurrency 1024
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+PrivateDevices=true
+ProtectSystem=strict
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+UMask=0077
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=$DATA_DIR
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -97,9 +119,11 @@ EOF
 Description=Pars2Ray Worker
 After=network-online.target pars2ray-master.service
 Wants=network-online.target
+
 [Service]
 Type=simple
-User=root
+User=$SERVICE_USER
+Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=$ENV_FILE
 Environment=PYTHONPATH=$INSTALL_DIR/master
@@ -109,9 +133,23 @@ RestartSec=5
 LimitNOFILE=65535
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+PrivateDevices=true
+ProtectSystem=strict
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+UMask=0077
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=$DATA_DIR
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -124,7 +162,12 @@ server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
-    client_max_body_size 50m;
+    server_tokens off;
+    client_max_body_size 10m;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
     location / {
         proxy_pass http://127.0.0.1:${PORT};
         proxy_http_version 1.1;
@@ -134,6 +177,9 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection \"upgrade\";
+    }
+    location ~ /\\. {
+        deny all;
     }
 }
 EOF
