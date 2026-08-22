@@ -77,35 +77,13 @@ def _owner(user: User, sub: Subscription) -> None:
         raise HTTPException(status_code=403, detail="forbidden")
 
 
-def _entitlement(user: User, sub: Subscription) -> None:
-    if not sub.enabled or not user.is_active:
-        raise HTTPException(status_code=409, detail="subscription_inactive")
-    expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
-    plan = None
-    if sub.plan_id is not None:
-        # A missing plan is a broken entitlement rather than an unlimited plan.
-        plan = user.__class__ and None
-    if sub.plan_id is not None:
-        from app.models.entities import Plan as _Plan
-        plan = db_plan = None
-        # The caller injects the resolved plan below through the temporary attribute.
-    if expires_at is not None and expires_at <= utcnow():
-        raise HTTPException(status_code=409, detail="subscription_expired")
-    quota = max(float(user.quota_gb or 0), 0.0)
-    used = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
-    if quota > 0 and used >= quota:
-        raise HTTPException(status_code=409, detail="traffic_quota_exceeded")
-
-
 def _effective_entitlement(db: Session, user: User, sub: Subscription) -> None:
     if not sub.enabled or not user.is_active:
         raise HTTPException(status_code=409, detail="subscription_inactive")
     plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
     if sub.plan_id is not None and plan is None:
         raise HTTPException(status_code=409, detail="subscription_plan_missing")
-    expires_at = sub.expires_at if sub.expires_at is not None else (plan and None) or user.expires_at
-    if plan is not None and sub.expires_at is None:
-        expires_at = user.expires_at
+    expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
     if expires_at is not None and expires_at <= utcnow():
         raise HTTPException(status_code=409, detail="subscription_expired")
     quota = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
