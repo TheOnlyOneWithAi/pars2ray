@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
-from app.core.security import random_token, token_hash, utcnow
+from app.core.security import encrypt_secret, random_token, token_hash, utcnow
 from app.db.base import get_db
 from app.models.entities import Plan, Subscription, User
 from app.schemas import ClientCreate, ClientOut, ClientUpdate
@@ -34,7 +34,7 @@ def _effective_quota(user: User | None, client: Subscription, plan: Plan | None)
     return max(float(user.quota_gb if user is not None else 0) or 0.0, 0.0)
 
 
-def _effective_expiry(user: User | None, client: Subscription) -> object:
+def _effective_expiry(user: User | None, client: Subscription):
     return client.expires_at if client.expires_at is not None else (user.expires_at if user is not None else None)
 
 
@@ -44,20 +44,7 @@ def _out(db: Session, client: Subscription) -> ClientOut:
     quota = _effective_quota(target, client, plan)
     expires_at = _effective_expiry(target, client)
     used = max(float(target.used_gb if target is not None else 0), float(client.used_gb or 0), 0.0)
-    return ClientOut(
-        id=client.id,
-        user_id=client.user_id,
-        username=target.username if target else "",
-        plan_id=client.plan_id,
-        plan_name=plan.name if plan else None,
-        client_id=_client_id(client.token_hash),
-        node_keys=list(client.node_keys or []),
-        enabled=client.enabled,
-        used_gb=used,
-        quota_gb=quota,
-        expires_at=expires_at,
-        created_at=client.created_at,
-    )
+    return ClientOut(id=client.id, user_id=client.user_id, username=target.username if target else "", plan_id=client.plan_id, plan_name=plan.name if plan else None, client_id=_client_id(client.token_hash), node_keys=list(client.node_keys or []), enabled=client.enabled, used_gb=used, quota_gb=quota, expires_at=expires_at, created_at=client.created_at)
 
 
 def _ensure_owner(user: User, client: Subscription) -> None:
@@ -74,18 +61,6 @@ def _ensure_plan_capacity(db: Session, user_id: int, plan: Plan, exclude_id: int
     active_count = int(db.scalar(query) or 0)
     if active_count >= plan.max_devices:
         raise HTTPException(status_code=409, detail="max_devices_reached")
-
-
-def _ensure_not_expired(user: User | None, client: Subscription, plan: Plan | None) -> None:
-    if not client.enabled:
-        raise HTTPException(status_code=409, detail="client_disabled")
-    expires_at = _effective_expiry(user, client)
-    if expires_at is not None and expires_at <= utcnow():
-        raise HTTPException(status_code=409, detail="client_expired")
-    quota = _effective_quota(user, client, plan)
-    used = max(float(user.used_gb if user is not None else 0), float(client.used_gb or 0), 0.0)
-    if quota > 0 and used >= quota:
-        raise HTTPException(status_code=409, detail="traffic_quota_exceeded")
 
 
 def _resolve_expiry(payload: ClientCreate, target: User, plan: Plan | None):
@@ -108,13 +83,7 @@ def _resolve_quota(payload: ClientCreate, target: User, plan: Plan | None) -> fl
 
 
 @router.get("", response_model=list[ClientOut])
-def list_clients(
-    search: str = "",
-    enabled: bool | None = None,
-    limit: int = 200,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER")),
-) -> list[ClientOut]:
+def list_clients(search: str = "", enabled: bool | None = None, limit: int = 200, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER"))) -> list[ClientOut]:
     limit = min(max(limit, 1), 500)
     query = select(Subscription).order_by(Subscription.id.desc()).limit(limit)
     if user.role == "RESELLER":
@@ -127,12 +96,7 @@ def list_clients(
 
 
 @router.post("", response_model=ClientOut, status_code=201)
-def create_client(
-    payload: ClientCreate,
-    request: Request,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER")),
-) -> ClientOut:
+def create_client(payload: ClientCreate, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER"))) -> ClientOut:
     target = db.get(User, payload.user_id)
     if not target or not target.is_active:
         raise HTTPException(status_code=404, detail="user_not_found")
@@ -154,8 +118,11 @@ def create_client(
     quota = _resolve_quota(payload, target, plan)
     if quota < 0:
         raise HTTPException(status_code=422, detail="invalid_quota")
+    if plan is None:
+        target.quota_gb = quota
+        target.expires_at = expires_at
     token = random_token(48)
-    client = Subscription(user_id=target.id, plan_id=plan.id if plan else None, token_hash=token_hash(token), token_enc=None, node_keys=node_keys, enabled=True, used_gb=0, expires_at=expires_at)
+    client = Subscription(user_id=target.id, plan_id=plan.id if plan else None, token_hash=token_hash(token), token_enc=encrypt_secret(token), node_keys=node_keys, enabled=True, used_gb=0, expires_at=expires_at)
     db.add(client)
     db.flush()
     record(db, user, "client.create", "client", str(client.id), request_ip(request), {"user_id": target.id, "plan_id": plan.id if plan else None, "quota_gb": quota, "expires_at": expires_at.isoformat() if expires_at else None})
@@ -165,13 +132,7 @@ def create_client(
 
 
 @router.patch("/{client_id}", response_model=ClientOut)
-def update_client(
-    client_id: int,
-    payload: ClientUpdate,
-    request: Request,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER")),
-) -> ClientOut:
+def update_client(client_id: int, payload: ClientUpdate, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER"))) -> ClientOut:
     client = _get_client(db, client_id)
     _ensure_owner(user, client)
     target = db.get(User, client.user_id)
@@ -188,13 +149,12 @@ def update_client(
         if len(keys) > 20:
             raise HTTPException(status_code=422, detail="too_many_nodes")
         client.node_keys = keys
-    if payload.quota_gb is not None:
-        # Subscription quota is represented by the user's direct entitlement when no plan is attached.
-        # Keep the explicit value on the user so plan-less clients have a single durable source of truth.
-        if client.plan_id is None and target is not None:
-            target.quota_gb = float(payload.quota_gb)
+    if payload.quota_gb is not None and client.plan_id is None and target is not None:
+        target.quota_gb = float(payload.quota_gb)
     if payload.duration_days is not None:
         client.expires_at = utcnow() + timedelta(days=payload.duration_days) if payload.duration_days > 0 else None
+        if client.plan_id is None and target is not None:
+            target.expires_at = client.expires_at
     if payload.enabled is not None:
         if payload.enabled:
             plan = db.get(Plan, client.plan_id) if client.plan_id is not None else None
@@ -208,6 +168,8 @@ def update_client(
         if payload.expires_at <= utcnow():
             raise HTTPException(status_code=422, detail="expires_at_must_be_future")
         client.expires_at = payload.expires_at
+        if client.plan_id is None and target is not None:
+            target.expires_at = payload.expires_at
     record(db, user, "client.update", "client", str(client.id), request_ip(request))
     db.commit()
     db.refresh(client)
@@ -215,12 +177,7 @@ def update_client(
 
 
 @router.post("/{client_id}/reset-traffic", response_model=ClientOut)
-def reset_client_traffic(
-    client_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER")),
-) -> ClientOut:
+def reset_client_traffic(client_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER"))) -> ClientOut:
     client = _get_client(db, client_id)
     _ensure_owner(user, client)
     client.used_gb = 0
@@ -234,12 +191,7 @@ def reset_client_traffic(
 
 
 @router.delete("/{client_id}")
-def delete_client(
-    client_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER")),
-) -> dict[str, bool]:
+def delete_client(client_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER")) -> dict[str, bool]:
     client = _get_client(db, client_id)
     _ensure_owner(user, client)
     record(db, user, "client.delete", "client", str(client.id), request_ip(request))
