@@ -216,6 +216,7 @@ class ClientCreate(BaseModel):
 
 class ClientUpdate(BaseModel):
     plan_id: int | None = Field(default=None, ge=1)
+    clear_plan: bool = False
     node_keys: list[str] | None = Field(default=None, max_length=20)
     quota_gb: float | None = Field(default=None, ge=0)
     duration_days: int | None = Field(default=None, ge=0, le=36500)
