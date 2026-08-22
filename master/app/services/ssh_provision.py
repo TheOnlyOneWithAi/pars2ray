@@ -51,8 +51,6 @@ def _client(config: SSHConfig) -> paramiko.SSHClient:
     finally:
         transport.close()
 
-    # Pin the verified key only in memory. Never create/read/write ~/.ssh.
-    # This keeps provisioning compatible with read-only /root filesystems.
     client.get_host_keys().add(config.host, server_key.get_name(), server_key)
     pkey = None
     if config.private_key:
@@ -70,18 +68,25 @@ def _client(config: SSHConfig) -> paramiko.SSHClient:
     return client
 
 
-# Paramiko's exec_command is the intended API for this authenticated SSH path.
-# Shell inputs are explicitly quoted before execution and the host key is
-# verified before authentication, so Bandit B601 is not actionable here.
 def _exec(client: paramiko.SSHClient, command: str, timeout: int):
     return client.exec_command(command, timeout=timeout)  # nosec B601
 
 
 INSTALL_SCRIPT = r'''set -eu
 export DEBIAN_FRONTEND=noninteractive
-command -v python3 >/dev/null 2>&1 || { apt-get update -o Acquire::Retries=2 -o Acquire::ForceIPv4=true; apt-get install -y python3; }
-command -v git >/dev/null 2>&1 || { apt-get update -o Acquire::Retries=2 -o Acquire::ForceIPv4=true; apt-get install -y git; }
-python3 -m venv /opt/pars2ray-agent/.venv 2>/dev/null || { apt-get update -o Acquire::Retries=2 -o Acquire::ForceIPv4=true; apt-get install -y python3-venv; python3 -m venv /opt/pars2ray-agent/.venv; }
+apt_install_if_missing() {
+  command -v "$1" >/dev/null 2>&1 || {
+    apt-get update -o Acquire::Retries=2 -o Acquire::ForceIPv4=true
+    apt-get install -y "$1"
+  }
+}
+apt_install_if_missing python3
+apt_install_if_missing git
+apt_install_if_missing curl
+python3 -m venv /opt/pars2ray-agent/.venv 2>/dev/null || {
+  apt_install_if_missing python3-venv
+  python3 -m venv /opt/pars2ray-agent/.venv
+}
 if [ ! -d /opt/pars2ray-agent/.git ]; then
   rm -rf /opt/pars2ray-agent
   git clone --depth 1 https://github.com/TheOnlyOneWithAi/pars2ray.git /opt/pars2ray-agent
