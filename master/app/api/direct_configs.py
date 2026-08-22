@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import secrets
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -116,7 +117,7 @@ def _build(payload: DirectConfigCreate, db: Session) -> tuple[str, dict]:
         link = "vmess://" + base64.b64encode(json.dumps(obj, separators=(",", ":")).encode()).decode()
     else:
         method = payload.method or "aes-128-gcm"
-        secret = payload.password or __import__("secrets").token_urlsafe(18)
+        secret = payload.password or secrets.token_urlsafe(18)
         userinfo = base64.urlsafe_b64encode(f"{method}:{secret}".encode()).decode().rstrip("=")
         link = f"ss://{userinfo}@{address}:{payload.port}#{name}"
     return link, {"id": str(uuid4()), "name": payload.name, "protocol": payload.protocol, "link": link, "address": address, "port": payload.port, "node_key": payload.node_key.upper() if payload.node_key else None, "enabled": True, "created_at": utcnow().isoformat()}
