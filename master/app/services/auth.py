@@ -20,13 +20,30 @@ def ensure_seed(db: Session) -> None:
             roles[name] = Role(name=name, description=name.replace("_", " ").title())
             db.add(roles[name])
     db.flush()
+
     admin = db.scalar(select(User).where(User.username == settings.admin_user))
     if not admin:
-        admin = User(username=settings.admin_user, email=settings.admin_email, password_hash=hash_password(settings.admin_password))
+        admin = User(
+            username=settings.admin_user,
+            email=settings.admin_email,
+            password_hash=hash_password(settings.admin_password),
+        )
         admin.roles = [roles["SUPER_ADMIN"]]
         db.add(admin)
-    elif not admin.roles:
-        admin.roles = [roles["SUPER_ADMIN"]]
+    else:
+        # The installer/SSH CLI persists the canonical admin password in
+        # ADMIN_PASSWORD before restarting the master. Keep the runtime DB
+        # synchronized with that value so the process and CLI cannot drift
+        # to different credentials after a restart.
+        if settings.admin_password and not verify_password(settings.admin_password, admin.password_hash):
+            admin.password_hash = hash_password(settings.admin_password)
+        if admin.email != settings.admin_email:
+            admin.email = settings.admin_email
+        if not admin.is_active:
+            admin.is_active = True
+        if not admin.roles:
+            admin.roles = [roles["SUPER_ADMIN"]]
+
     db.commit()
 
 
