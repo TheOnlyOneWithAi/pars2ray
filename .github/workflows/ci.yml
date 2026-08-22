@@ -167,4 +167,4 @@ jobs:
         working-directory: frontend
         run: npm audit --omit=dev --audit-level=high
 
-# CI trigger marker: Xray management pass validation baseline.
+# CI trigger marker: Xray management pass validation baseline v2.
