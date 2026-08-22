@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -16,7 +17,7 @@ from app.services.canary_executor import CanaryExecutionError, execute_canary
 from app.services.national_mode import national_engine
 
 logger = logging.getLogger(__name__)
-scheduler = AsyncIOScheduler(timezone="UTC")
+scheduler: AsyncIOScheduler | None = None
 
 
 async def poll_nodes() -> None:
@@ -68,10 +69,15 @@ async def intelligence_tick() -> None:
 
 
 def start_scheduler() -> None:
-    if scheduler.running:
+    global scheduler
+    if scheduler is not None and scheduler.running:
         return
-    # Node health is intentionally one-shot: all existing nodes are checked once
-    # after startup and are not polled again until the master process restarts.
+
+    # APScheduler's AsyncIOScheduler captures the current event loop. FastAPI's
+    # TestClient creates a fresh loop for each lifespan, so a module-level
+    # scheduler cannot safely be reused across multiple TestClient instances.
+    loop = asyncio.get_running_loop()
+    scheduler = AsyncIOScheduler(event_loop=loop, timezone="UTC")
     scheduler.add_job(
         poll_nodes,
         "date",
@@ -80,10 +86,21 @@ def start_scheduler() -> None:
         replace_existing=True,
         max_instances=1,
     )
-    scheduler.add_job(intelligence_tick, "interval", seconds=max(getattr(settings, "intelligence_interval_seconds", 300), 30), id="intelligence-cycle", replace_existing=True, coalesce=True, max_instances=1)
+    scheduler.add_job(
+        intelligence_tick,
+        "interval",
+        seconds=max(getattr(settings, "intelligence_interval_seconds", 300), 30),
+        id="intelligence-cycle",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
     scheduler.start()
 
 
 def stop_scheduler() -> None:
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
+    global scheduler
+    current = scheduler
+    scheduler = None
+    if current is not None and current.running:
+        current.shutdown(wait=False)
