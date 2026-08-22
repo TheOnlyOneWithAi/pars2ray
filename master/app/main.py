@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 from starlette.responses import PlainTextResponse
 
 from app.api.ai_config import router as ai_config_router
@@ -58,11 +59,11 @@ def _host_allowed(request: Request) -> bool:
 
 @app.middleware("http")
 async def security_and_rate_limit(request: Request, call_next):
-    if not _host_allowed(request) and request.url.path not in {"/health", "/api/v1/health"}:
+    if not _host_allowed(request) and request.url.path not in {"/health", "/ready", "/api/v1/health"}:
         return PlainTextResponse("Invalid host header", status_code=400)
     if any(request.url.path == prefix or request.url.path.startswith(prefix + "/") for prefix in LEGACY_DISABLED_PREFIXES):
         return JSONResponse(status_code=404, content={"detail": "feature_removed"})
-    if request.url.path not in {"/health", "/api/v1/health", "/docs", "/redoc", "/openapi.json"}:
+    if request.url.path not in {"/health", "/ready", "/api/v1/health", "/docs", "/redoc", "/openapi.json"}:
         try:
             enforce(request)
         except Exception as exc:
@@ -84,6 +85,18 @@ async def security_and_rate_limit(request: Request, call_next):
 @app.get("/health", include_in_schema=False)
 def root_health() -> dict:
     return {"ok": True, "service": settings.app_name, "version": settings.app_version}
+
+
+@app.get("/ready", include_in_schema=False)
+def readiness() -> Response:
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT 1"))
+        return JSONResponse({"ok": True, "service": settings.app_name, "version": settings.app_version, "database": "ready"})
+    except Exception:
+        return JSONResponse(status_code=503, content={"ok": False, "service": settings.app_name, "database": "unavailable"})
+    finally:
+        db.close()
 
 
 app.include_router(ai_settings_router)
