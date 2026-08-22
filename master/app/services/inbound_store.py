@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Table, Text, Column, MetaData, select, insert, update, delete
+from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, MetaData, String, Table, delete, insert, select, update
 from sqlalchemy.orm import Session
 
 
@@ -73,14 +72,7 @@ def mark_selected(db: Session, inbound_id: int) -> dict[str, Any] | None:
 
 
 def create_client(db: Session, name: str, email: str | None, inbound_ids: list[int]) -> dict[str, Any]:
-    client = {
-        "name": name.strip(),
-        "email": email.strip() if email else None,
-        "uuid": str(uuid.uuid4()),
-        "inbound_ids": sorted(set(int(item) for item in inbound_ids)),
-        "enabled": True,
-        "created_at": datetime.utcnow(),
-    }
+    client = {"name": name.strip(), "email": email.strip() if email else None, "uuid": str(uuid.uuid4()), "inbound_ids": sorted(set(int(item) for item in inbound_ids)), "enabled": True, "created_at": datetime.utcnow()}
     result = db.execute(insert(clients).values(**client).returning(*clients.c))
     row = result.first()
     db.commit()
