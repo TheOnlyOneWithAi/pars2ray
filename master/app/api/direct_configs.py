@@ -186,6 +186,9 @@ async def create_direct_config(subscription_id: int, payload: DirectConfigCreate
     if not target:
         raise HTTPException(status_code=404, detail="user_not_found")
     _effective_entitlement(db, target, sub)
+    raw_token = decrypt_secret(sub.token_enc) if sub.token_enc else ""
+    if not raw_token:
+        raise HTTPException(status_code=409, detail="subscription_token_unavailable")
     address, address_meta = _address(payload, db, request)
     fallback = {"protocol": payload.protocol, "port": payload.port, "transport": payload.transport, "security": payload.security, "sni": payload.sni, "host": payload.host, "path": payload.path, "service_name": payload.service_name, "flow": payload.flow, "fingerprint": payload.fingerprint, "public_key": payload.public_key, "short_id": payload.short_id}
     snapshot = {"server": address, "address_source": address_meta["source"], "node_key": payload.node_key, "requested": fallback, "supported": {"protocols": ["vless", "vmess", "shadowsocks"], "transports": ["tcp", "grpc", "websocket", "httpupgrade", "xhttp", "quic"], "security": ["none", "tls", "reality"]}, "goal": "secure, compatible, low overhead"}
@@ -205,9 +208,6 @@ async def create_direct_config(subscription_id: int, payload: DirectConfigCreate
     db.commit()
     base = _public_subscription_base(request, db)
     origin = base.split(_subscription_path(db), 1)[0]
-    raw_token = decrypt_secret(sub.token_enc) if sub.token_enc else ""
-    if not raw_token:
-        raise HTTPException(status_code=409, detail="subscription_token_unavailable")
     subscription_url = f"{origin}/s/{quote(raw_token, safe='')}"
     return {"ok": True, "config": row, "link": link, "subscription_url": subscription_url, "raw_url": f"{subscription_url}/raw", "inbound_required": False, "credential_source": "protocol_generated", "ai": ai_meta}
 
