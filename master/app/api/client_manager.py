@@ -4,7 +4,7 @@ from datetime import timedelta
 from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, request_ip, require_roles
@@ -53,15 +53,14 @@ def _ensure_owner(user: User, client: Subscription) -> None:
 
 
 def _ensure_plan_capacity(db: Session, user_id: int, plan: Plan, exclude_id: int | None = None) -> None:
-    if exclude_id is None:
-        count = db.scalar(select(Subscription.id).where(Subscription.user_id == user_id, Subscription.enabled.is_(True)))
-    else:
-        count = db.scalar(select(Subscription.id).where(Subscription.user_id == user_id, Subscription.enabled.is_(True), Subscription.id != exclude_id))
-    if count is not None:
-        # max_devices is a per-user active client limit.
-        active_count = db.query(Subscription.id).filter(Subscription.user_id == user_id, Subscription.enabled.is_(True), *( [Subscription.id != exclude_id] if exclude_id is not None else [] )).count()
-        if active_count >= plan.max_devices:
-            raise HTTPException(status_code=409, detail="max_devices_reached")
+    if plan.max_devices < 1:
+        raise HTTPException(status_code=422, detail="invalid_plan_device_limit")
+    query = select(func.count(Subscription.id)).where(Subscription.user_id == user_id, Subscription.enabled.is_(True))
+    if exclude_id is not None:
+        query = query.where(Subscription.id != exclude_id)
+    active_count = int(db.scalar(query) or 0)
+    if active_count >= plan.max_devices:
+        raise HTTPException(status_code=409, detail="max_devices_reached")
 
 
 def _ensure_not_expired(client: Subscription, plan: Plan | None) -> None:
@@ -143,7 +142,7 @@ def update_client(
         plan = db.get(Plan, payload.plan_id)
         if not plan or not plan.enabled:
             raise HTTPException(status_code=404, detail="plan_not_found")
-        if client.enabled and plan.max_devices > 0:
+        if client.enabled:
             _ensure_plan_capacity(db, client.user_id, plan, exclude_id=client.id)
         client.plan_id = plan.id
     if payload.node_keys is not None:
