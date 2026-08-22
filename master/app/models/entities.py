@@ -8,24 +8,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 
-user_roles = Table(
-    "user_roles",
-    Base.metadata,
-    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
-    Column("role_id", ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
-)
-
-role_permissions = Table(
-    "role_permissions",
-    Base.metadata,
-    Column("role_id", ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
-    Column("permission_id", ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True),
-)
+user_roles = Table("user_roles", Base.metadata, Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True), Column("role_id", ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True))
+role_permissions = Table("role_permissions", Base.metadata, Column("role_id", ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True), Column("permission_id", ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True))
 
 
 class User(Base):
     __tablename__ = "users"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     email: Mapped[str | None] = mapped_column(String(254), unique=True, nullable=True)
@@ -34,7 +22,6 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     roles: Mapped[list["Role"]] = relationship(secondary=user_roles, back_populates="users", lazy="selectin")
-
     @property
     def role(self) -> str:
         priority = {"SUPER_ADMIN": 0, "ADMIN": 1, "OPERATOR": 2, "RESELLER": 3, "USER": 4}
@@ -43,7 +30,6 @@ class User(Base):
 
 class Role(Base):
     __tablename__ = "roles"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     description: Mapped[str] = mapped_column(String(255), default="")
@@ -53,7 +39,6 @@ class Role(Base):
 
 class Permission(Base):
     __tablename__ = "permissions"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     roles: Mapped[list[Role]] = relationship(secondary=role_permissions, back_populates="permissions")
@@ -61,7 +46,6 @@ class Permission(Base):
 
 class Node(Base):
     __tablename__ = "nodes"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     node_key: Mapped[str] = mapped_column(String(40), unique=True, index=True)
     country: Mapped[str] = mapped_column(String(2), index=True)
@@ -86,7 +70,6 @@ class Node(Base):
 
 class Route(Base):
     __tablename__ = "routes"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
     node_keys: Mapped[list] = mapped_column(JSON, default=list)
@@ -105,7 +88,6 @@ class Route(Base):
 
 class Experiment(Base):
     __tablename__ = "experiments"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     candidate_id: Mapped[str] = mapped_column(String(80), index=True)
     route_hash: Mapped[str] = mapped_column(String(128), index=True)
@@ -128,7 +110,6 @@ class Experiment(Base):
 
 class Decision(Base):
     __tablename__ = "optimizer_decisions"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     current_score: Mapped[float] = mapped_column(Float)
     proposed_score: Mapped[float] = mapped_column(Float)
@@ -145,7 +126,6 @@ class Decision(Base):
 
 class Metric(Base):
     __tablename__ = "metrics"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     node_id: Mapped[int] = mapped_column(ForeignKey("nodes.id", ondelete="CASCADE"), index=True)
     latency_ms: Mapped[float] = mapped_column(Float, default=0)
@@ -156,25 +136,21 @@ class Metric(Base):
     memory_percent: Mapped[float] = mapped_column(Float, default=0)
     stability_percent: Mapped[float] = mapped_column(Float, default=0)
     measured_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-
     __table_args__ = (Index("ix_metrics_node_measured_at", "node_id", "measured_at"),)
 
 
 class Traffic(Base):
     __tablename__ = "traffic"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     node_id: Mapped[int] = mapped_column(ForeignKey("nodes.id", ondelete="CASCADE"), index=True)
     rx_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     tx_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     sampled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-
     __table_args__ = (Index("ix_traffic_node_sampled_at", "node_id", "sampled_at"),)
 
 
 class Plan(Base):
     __tablename__ = "plans"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
     quota_gb: Mapped[float] = mapped_column(Float, default=0)
@@ -186,12 +162,12 @@ class Plan(Base):
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     plan_id: Mapped[int] = mapped_column(ForeignKey("plans.id", ondelete="RESTRICT"), index=True)
     token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     node_keys: Mapped[list] = mapped_column(JSON, default=list)
+    config_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     used_gb: Mapped[float] = mapped_column(Float, default=0)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
@@ -200,7 +176,6 @@ class Subscription(Base):
 
 class ApiKey(Base):
     __tablename__ = "api_keys"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(100))
@@ -215,7 +190,6 @@ class ApiKey(Base):
 
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
@@ -226,7 +200,6 @@ class RefreshToken(Base):
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(120), index=True)
@@ -239,7 +212,6 @@ class AuditLog(Base):
 
 class SystemSetting(Base):
     __tablename__ = "system_settings"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     value_enc: Mapped[str] = mapped_column(Text)
@@ -249,7 +221,6 @@ class SystemSetting(Base):
 
 class SystemState(Base):
     __tablename__ = "system_state"
-
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
     mode: Mapped[str] = mapped_column(String(24), default="NORMAL")
     international_failures: Mapped[int] = mapped_column(Integer, default=0)
@@ -261,7 +232,6 @@ class SystemState(Base):
 
 class ResearchFinding(Base):
     __tablename__ = "research_findings"
-
     id: Mapped[int] = mapped_column(primary_key=True)
     source: Mapped[str] = mapped_column(String(80), index=True)
     version: Mapped[str] = mapped_column(String(80), index=True)
@@ -269,5 +239,4 @@ class ResearchFinding(Base):
     notes: Mapped[str] = mapped_column(Text, default="")
     url: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-
     __table_args__ = (UniqueConstraint("source", "version", name="uq_research_source_version"),)
