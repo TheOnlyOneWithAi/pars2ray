@@ -47,10 +47,10 @@ def _subscription_rows(db: Session, token: str) -> tuple[Subscription, User] | N
     user = db.get(User, sub.user_id)
     if not user or not user.is_active:
         return None
-    expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
+    plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+    expires_at = sub.expires_at if sub.plan_id is not None else (sub.expires_at if sub.expires_at is not None else user.expires_at)
     if expires_at is not None and expires_at <= utcnow():
         return None
-    plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
     quota_gb = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
     used_gb = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
     if quota_gb > 0 and used_gb >= quota_gb:
@@ -59,7 +59,14 @@ def _subscription_rows(db: Session, token: str) -> tuple[Subscription, User] | N
 
 
 def _effective_expiry(sub: Subscription, user: User):
+    if sub.plan_id is not None:
+        return sub.expires_at
     return sub.expires_at if sub.expires_at is not None else user.expires_at
+
+
+def _effective_quota(db: Session, sub: Subscription, user: User) -> float:
+    plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+    return max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
 
 
 def _template(db: Session) -> str:
@@ -199,8 +206,7 @@ async def build_route_config(route_id: int, payload: ConfigBuildRequest, db: Ses
             expires_at = _effective_expiry(sub, owner)
             if expires_at is not None and expires_at <= now:
                 continue
-            plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
-            quota = float(plan.quota_gb if plan is not None else owner.quota_gb or 0)
+            quota = _effective_quota(db, sub, owner)
             used = max(float(owner.used_gb or 0), float(sub.used_gb or 0))
             if quota > 0 and used >= quota:
                 continue
@@ -218,84 +224,99 @@ async def build_route_config(route_id: int, payload: ConfigBuildRequest, db: Ses
                 continue
             result = await agent_client.apply_config(node, {"core": route.core, "config": config, "candidate_id": f"route-{route.id}"})
             if not result.get("ok"):
-                raise HTTPException(status_code=502, detail={"node": key, "reason": result.get("reason", "apply_failed")})
+                for rollback_key in applied:
+                    rollback_node = db.scalar(select(Node).where(Node.node_key == rollback_key))
+                    if rollback_node:
+                        await agent_client.rollback(rollback_node, f"route-{route.id}")
+                raise HTTPException(status_code=502, detail={"message": "agent_apply_failed", "node": key, "result": result})
             applied.append(key)
-    return {"ok": True, "route_id": route.id, "core": route.core, "protocol": route.protocol, "transport": route.transport, "config": config, "applied_nodes": applied}
+    return {"ok": True, "route_id": route.id, "clients": len(clients), "nodes_applied": applied, "config": config}
 
 
-@router.get("/system/panel-domain")
-def panel_domain(db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN"))) -> dict:
-    return {"domain": _setting(db, "panel.domain"), "tls": _setting(db, "panel.tls", "false").lower() == "true", "email": _setting(db, "panel.tls.email")}
-
-
-@router.put("/system/panel-domain")
-def update_panel_domain(payload: PanelDomainUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN"))) -> dict:
-    try:
-        result = apply_proxy(payload.domain, payload.tls, payload.email)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if not result.get("ok"):
-        raise HTTPException(status_code=502, detail=result)
-    values = {"panel.domain": payload.domain.strip().lower().rstrip("."), "panel.tls": str(payload.tls).lower(), "panel.tls.email": payload.email or ""}
-    for key, value in values.items():
-        row = db.scalar(select(SystemSetting).where(SystemSetting.key == key))
-        if not row:
-            db.add(SystemSetting(key=key, value_enc=encrypt_secret(value), is_secret=False))
-        else:
-            row.value_enc = encrypt_secret(value)
-    db.commit()
-    return result
-
-
-@router.put("/system/subscription-html")
-def update_subscription_html(payload: dict, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN"))) -> dict:
-    template = payload.get("html")
-    if not isinstance(template, str) or not template.strip():
-        raise HTTPException(status_code=422, detail="html_required")
-    if len(template) > 100000:
-        raise HTTPException(status_code=413, detail="html_too_large")
-    row = db.scalar(select(SystemSetting).where(SystemSetting.key == "subscription.html"))
+@router.get("/subscriptions/{token}", response_class=HTMLResponse)
+async def subscription_page(token: str, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    row = _subscription_rows(db, token)
     if not row:
-        db.add(SystemSetting(key="subscription.html", value_enc=encrypt_secret(template), is_secret=False))
-    else:
-        row.value_enc = encrypt_secret(template)
-    db.commit()
-    return {"ok": True, "bytes": len(template.encode("utf-8"))}
-
-
-@router.get("/system/subscription-html")
-def get_subscription_html(db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN"))) -> dict:
-    return {"html": _template(db)}
-
-
-@public_router.get("/sub/{token}", response_class=HTMLResponse, include_in_schema=False)
-@public_router.get("/link/{token}", response_class=HTMLResponse, include_in_schema=False)
-def subscription_page(token: str, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    found = _subscription_rows(db, token)
-    if not found:
         raise HTTPException(status_code=404, detail="subscription_not_found")
-    sub, user = found
+    sub, user = row
     lines = _connection_lines(db, sub, token)
-    plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
-    quota_gb = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
-    used_gb = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
-    unlimited = quota_gb <= 0
-    remaining_gb = max(quota_gb - used_gb, 0.0) if not unlimited else 0.0
-    remaining_percent = 100.0 if unlimited else max(min((remaining_gb / quota_gb) * 100.0, 100.0), 0.0)
+    origin = f"{request.url.scheme}://{request.headers.get('host') or request.url.netloc}"
+    subscription_url = f"{origin}/s/{quote(token, safe='')}"
+    raw_url = f"{subscription_url}/raw"
     expires_at = _effective_expiry(sub, user)
-    now = utcnow()
-    days_remaining = max((expires_at - now).days, 0) if expires_at else 0
-    subscription_url = str(request.url)
-    raw_url = subscription_url.rstrip("/") + "/raw"
-    values = {"title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")), "username": html.escape(user.username), "expires_at": html.escape(expires_at.isoformat() if expires_at else "Unlimited"), "token": html.escape(token), "subscription_url": html.escape(subscription_url, quote=True), "raw_url": html.escape(raw_url, quote=True), "configs": html.escape("\n".join(lines)), "config_count": str(len(lines)), "used_gb": f"{used_gb:.2f}", "quota_gb": "Unlimited" if unlimited else f"{quota_gb:.2f}", "remaining_gb": "Unlimited" if unlimited else f"{remaining_gb:.2f}", "remaining_percent": "100" if unlimited else f"{remaining_percent:.1f}", "days_remaining": str(days_remaining), "vless_links": _subscription_html_links(lines), "connection_instructions": _connection_instructions_html()}
-    return HTMLResponse(_render(_template(db), values))
+    quota = _effective_quota(db, sub, user)
+    used = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
+    remaining = max(quota - used, 0.0) if quota > 0 else 0.0
+    percent = max(0.0, min(100.0, (used / quota * 100.0))) if quota > 0 else 0.0
+    days_remaining = max((expires_at - utcnow()).days, 0) if expires_at is not None else None
+    template = _template(db)
+    rendered = _render(template, {"title": "Pars2Ray Subscription", "username": user.username, "used_gb": f"{used:.2f}", "quota_gb": f"{quota:.2f}" if quota > 0 else "Unlimited", "remaining_gb": f"{remaining:.2f}" if quota > 0 else "Unlimited", "remaining_percent": f"{max(0.0, 100.0 - percent):.1f}" if quota > 0 else "Unlimited", "expires_at": expires_at.isoformat() if expires_at else "Never", "days_remaining": str(days_remaining) if days_remaining is not None else "Unlimited", "subscription_url": subscription_url, "raw_url": raw_url, "vless_links": _subscription_html_links(lines), "connection_instructions": _connection_instructions_html(), "configs": "\n".join(lines)})
+    return HTMLResponse(rendered)
 
 
-@public_router.get("/sub/{token}/raw", response_class=PlainTextResponse, include_in_schema=False)
-@public_router.get("/link/{token}/raw", response_class=PlainTextResponse, include_in_schema=False)
-def subscription_raw(token: str, db: Session = Depends(get_db)) -> PlainTextResponse:
-    found = _subscription_rows(db, token)
-    if not found:
+@public_router.get("/s/{token}", response_class=PlainTextResponse)
+async def subscription_raw(token: str, request: Request, db: Session = Depends(get_db)) -> PlainTextResponse:
+    row = _subscription_rows(db, token)
+    if not row:
         raise HTTPException(status_code=404, detail="subscription_not_found")
-    sub, _ = found
-    return PlainTextResponse("\n".join(_connection_lines(db, sub, token)), media_type="text/plain")
+    sub, _user = row
+    lines = _connection_lines(db, sub, token)
+    return PlainTextResponse("\n".join(lines) + ("\n" if lines else ""), headers={"Cache-Control": "private, no-store", "Content-Type": "text/plain; charset=utf-8"})
+
+
+@router.get("/s/{token}/raw", response_class=PlainTextResponse)
+async def subscription_raw_suffix(token: str, request: Request, db: Session = Depends(get_db)) -> PlainTextResponse:
+    return await subscription_raw(token, request, db)
+
+
+@public_router.get("/link/{token}", response_class=PlainTextResponse)
+async def legacy_subscription_raw(token: str, request: Request, db: Session = Depends(get_db)) -> PlainTextResponse:
+    return await subscription_raw(token, request, db)
+
+
+@public_router.get("/link/{token}/raw", response_class=PlainTextResponse)
+async def legacy_subscription_raw_suffix(token: str, request: Request, db: Session = Depends(get_db)) -> PlainTextResponse:
+    return await subscription_raw(token, request, db)
+
+
+@public_router.get("/link/{username}", response_class=PlainTextResponse)
+async def legacy_username_subscription(username: str, db: Session = Depends(get_db)) -> PlainTextResponse:
+    user = db.scalar(select(User).where(User.username == username, User.is_active.is_(True)))
+    if not user:
+        raise HTTPException(status_code=404, detail="subscription_not_found")
+    sub = db.scalar(select(Subscription).where(Subscription.user_id == user.id, Subscription.enabled.is_(True)).order_by(Subscription.id.desc()))
+    if not sub:
+        raise HTTPException(status_code=404, detail="subscription_not_found")
+    row = _subscription_rows(db, _decrypt_token(sub))
+    if not row:
+        raise HTTPException(status_code=404, detail="subscription_not_found")
+    return await subscription_raw(_decrypt_token(sub), Request({"type": "http", "method": "GET", "path": "/link"}), db)
+
+
+def _decrypt_token(sub: Subscription) -> str:
+    from app.core.security import decrypt_secret
+    try:
+        return decrypt_secret(sub.token_enc)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="subscription_not_found") from exc
+
+
+@router.get("/panel/domain")
+def get_panel_domain(db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN"))) -> dict:
+    return {"domain": _setting(db, "panel_domain", "")}
+
+
+@router.put("/panel/domain")
+def set_panel_domain(payload: PanelDomainUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN"))) -> dict:
+    from app.services.audit import record
+    value = payload.domain.strip()
+    if not value.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="domain_must_include_scheme")
+    row = db.scalar(select(SystemSetting).where(SystemSetting.key == "panel_domain"))
+    if row:
+        row.value_enc = encrypt_secret(value)
+    else:
+        db.add(SystemSetting(key="panel_domain", value_enc=encrypt_secret(value)))
+    record(db, user, "panel.domain.update", "setting", "panel_domain", None, {"domain": value})
+    db.commit()
+    return {"ok": True, "domain": value}
