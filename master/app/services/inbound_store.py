@@ -61,6 +61,17 @@ def select_inbound(db: Session, inbound_id: int) -> dict[str, Any] | None:
     return dict(row._mapping) if row else None
 
 
+def delete_inbound(db: Session, inbound_id: int) -> bool:
+    result = db.execute(delete(inbounds).where(inbounds.c.id == inbound_id))
+    if result.rowcount:
+        db.execute(
+            update(clients)
+            .where(clients.c.inbound_ids.contains([inbound_id]))
+        )
+    db.commit()
+    return bool(result.rowcount)
+
+
 def mark_selected(db: Session, inbound_id: int) -> dict[str, Any] | None:
     row = select_inbound(db, inbound_id)
     if not row:
