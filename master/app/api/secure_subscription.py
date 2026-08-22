@@ -24,11 +24,9 @@ def _lookup(token: str, db: Session) -> tuple[Subscription, User]:
     user = db.get(User, sub.user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=404, detail="subscription_not_found")
-
     expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
     if expires_at is not None and expires_at <= utcnow():
         raise HTTPException(status_code=404, detail="subscription_not_found")
-
     plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
     quota = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
     used = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
@@ -44,16 +42,22 @@ def _secure_url(request: Request, db: Session, token: str) -> str:
     return f"{origin}/s/{quote(token, safe='')}"
 
 
+def _rewrite_subscription_url(response: Response, old_url: str, new_url: str) -> None:
+    body = getattr(response, "body", None)
+    if not body:
+        return
+    if isinstance(body, bytes):
+        response.body = body.replace(old_url.encode(), new_url.encode())
+        response.headers["content-length"] = str(len(response.body))
+
+
 @public_router.get("/s/{token}")
 def secure_subscription(token: str, request: Request, db: Session = Depends(get_db)) -> Response:
     sub, user = _lookup(token, db)
     response = subscription(user.username, request, db)
     secure = _secure_url(request, db, token)
     legacy = f"{_public_subscription_base(request, db)}{quote(user.username, safe='')}"
-    if hasattr(response, "body") and response.body:
-        body = response.body.replace(legacy.encode(), secure.encode())
-        response.body = body
-        response.headers["content-length"] = str(len(body))
+    _rewrite_subscription_url(response, legacy, secure)
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -65,7 +69,7 @@ def secure_subscription(token: str, request: Request, db: Session = Depends(get_
 def secure_subscription_raw(token: str, db: Session = Depends(get_db)) -> PlainTextResponse:
     sub, user = _lookup(token, db)
     body = "\n".join(_all_links(db, sub, user))
-    response = PlainTextResponse(body, headers=_headers(db, user, sub))
+    response = PlainTextResponse(body, headers=_headers(db, user, sub), media_type="text/plain; charset=utf-8")
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Referrer-Policy"] = "no-referrer"
