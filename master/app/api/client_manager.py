@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_roles
+from app.api.deps import request_ip, require_roles
 from app.core.security import encrypt_secret, random_token, token_hash, utcnow
 from app.db.base import get_db
 from app.models.entities import Plan, Subscription, User
