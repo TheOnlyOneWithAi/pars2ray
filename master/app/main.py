@@ -17,6 +17,7 @@ from app.api.direct_configs import router as direct_configs_router
 from app.api.inbounds import router as inbounds_router
 from app.api.routes import router
 from app.api.protocols import public_router, router as protocols_router
+from app.api.subscription_server import public_router as subscription_public_router, router as subscription_router
 from app.api.ai_settings import router as ai_settings_router
 from app.api.node_management import router as node_management_router
 from app.api.xray_management import router as xray_management_router
@@ -103,8 +104,10 @@ def readiness() -> Response:
 app.include_router(user_provisioning_router)
 app.include_router(ai_settings_router)
 app.include_router(ai_config_router)
+app.include_router(subscription_router)
 app.include_router(router)
 app.include_router(protocols_router)
+app.include_router(subscription_public_router)
 app.include_router(public_router)
 app.include_router(node_management_router)
 app.include_router(xray_management_router)
