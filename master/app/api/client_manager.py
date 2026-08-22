@@ -191,7 +191,7 @@ def reset_client_traffic(client_id: int, request: Request, db: Session = Depends
 
 
 @router.delete("/{client_id}")
-def delete_client(client_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER")) -> dict[str, bool]:
+def delete_client(client_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER"))) -> dict[str, bool]:
     client = _get_client(db, client_id)
     _ensure_owner(user, client)
     record(db, user, "client.delete", "client", str(client.id), request_ip(request))
