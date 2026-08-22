@@ -44,8 +44,8 @@ def create_user_with_subscription(
         if missing:
             raise HTTPException(status_code=422, detail={"code": "unknown_nodes", "nodes": missing})
 
-    effective_quota = float(quota_gb if quota_gb is not None else (plan.quota_gb if plan else 0))
-    effective_duration = duration_days if duration_days is not None else (plan.duration_days if plan else 0)
+    effective_quota = float(quota_gb if quota_gb is not None else (payload.quota_gb if payload.plan_id is None else plan.quota_gb if plan else 0))
+    effective_duration = duration_days if duration_days is not None else (payload.duration_days if payload.plan_id is None else plan.duration_days if plan else 0)
     expires_at = payload.expires_at
     if expires_at is None and effective_duration > 0:
         expires_at = utcnow() + timedelta(days=effective_duration)
