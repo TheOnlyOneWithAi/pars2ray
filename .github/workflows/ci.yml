@@ -166,3 +166,5 @@ jobs:
       - name: Audit frontend production dependencies
         working-directory: frontend
         run: npm audit --omit=dev --audit-level=high
+
+# CI trigger marker: Xray management pass validation baseline.
