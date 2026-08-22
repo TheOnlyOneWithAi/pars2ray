@@ -190,6 +190,36 @@ class SubscriptionOut(ORMModel):
     created_at: datetime
 
 
+class ClientCreate(BaseModel):
+    user_id: int = Field(ge=1)
+    plan_id: int = Field(ge=1)
+    node_keys: list[str] = Field(default_factory=list, max_length=20)
+    expires_at: datetime | None = None
+    single_active: bool = True
+
+
+class ClientUpdate(BaseModel):
+    plan_id: int | None = Field(default=None, ge=1)
+    node_keys: list[str] | None = Field(default=None, max_length=20)
+    enabled: bool | None = None
+    expires_at: datetime | None = None
+
+
+class ClientOut(BaseModel):
+    id: int
+    user_id: int
+    username: str
+    plan_id: int
+    plan_name: str
+    client_id: str
+    node_keys: list[str]
+    enabled: bool
+    used_gb: float
+    quota_gb: float
+    expires_at: datetime
+    created_at: datetime
+
+
 class AuditLogOut(ORMModel):
     id: int
     actor_user_id: int | None
@@ -258,24 +288,3 @@ class ApiKeyCreate(BaseModel):
 
 class ApiKeyOut(ORMModel):
     id: int
-    name: str
-    key_prefix: str
-    scopes: list[str]
-    last_used_at: datetime | None
-    expires_at: datetime | None
-    revoked_at: datetime | None
-    created_at: datetime
-
-
-class PlanCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=100)
-    quota_gb: float = Field(ge=0)
-    duration_days: int = Field(ge=1, le=3650)
-    max_devices: int = Field(ge=1, le=100)
-    price_minor: int = Field(ge=0)
-
-
-class SubscriptionCreate(BaseModel):
-    user_id: int = Field(gt=0)
-    plan_id: int = Field(gt=0)
-    node_keys: list[str] = Field(default_factory=list, max_length=20)
