@@ -59,13 +59,28 @@ def _host_allowed(request: Request) -> bool:
     return host in {item.lower().rstrip(".") for item in settings.trusted_host_list} or host == "localhost" or host == "127.0.0.1"
 
 
+def _is_legacy_username_link(path: str) -> bool:
+    if not path.startswith("/link/"):
+        return False
+    parts = path.split("/")
+    if len(parts) < 3 or not parts[2]:
+        return False
+    token = parts[2]
+    # Subscription tokens are generated with secrets.token_urlsafe(48), so a
+    # short path segment can only be the insecure username compatibility route.
+    return len(token) < 40
+
+
 @app.middleware("http")
 async def security_and_rate_limit(request: Request, call_next):
-    if not _host_allowed(request) and request.url.path not in {"/health", "/ready", "/api/v1/health"}:
+    path = request.url.path
+    if not _host_allowed(request) and path not in {"/health", "/ready", "/api/v1/health"}:
         return PlainTextResponse("Invalid host header", status_code=400)
-    if any(request.url.path == prefix or request.url.path.startswith(prefix + "/") for prefix in LEGACY_DISABLED_PREFIXES):
+    if any(path == prefix or path.startswith(prefix + "/") for prefix in LEGACY_DISABLED_PREFIXES):
         return JSONResponse(status_code=404, content={"detail": "feature_removed"})
-    if request.url.path not in {"/health", "/ready", "/api/v1/health", "/docs", "/redoc", "/openapi.json"}:
+    if _is_legacy_username_link(path):
+        return JSONResponse(status_code=404, content={"detail": "username_subscription_disabled"})
+    if path not in {"/health", "/ready", "/api/v1/health", "/docs", "/redoc", "/openapi.json"}:
         try:
             enforce(request)
         except Exception as exc:
@@ -75,7 +90,6 @@ async def security_and_rate_limit(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    path = request.url.path
     if path.startswith("/api/") or any(path.startswith(prefix) for prefix in PUBLIC_PRIVATE_PREFIXES):
         response.headers["Cache-Control"] = "private, no-store, max-age=0"
         response.headers["Pragma"] = "no-cache"
@@ -109,8 +123,6 @@ app.include_router(ai_config_router)
 app.include_router(subscription_router)
 app.include_router(router)
 app.include_router(protocols_router)
-# Canonical token routes must be registered before the legacy username routes.
-# The compatibility handlers also preserve existing /link/<username> URLs.
 app.include_router(secure_subscription_public_router)
 app.include_router(subscription_public_router)
 app.include_router(node_management_router)
