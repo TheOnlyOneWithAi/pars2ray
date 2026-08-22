@@ -2,7 +2,7 @@ import type { FormEvent, ReactNode } from 'react'
 import type { TranslationKey } from './i18n'
 
 export type T = (key: TranslationKey) => string
-
+const finite = (value: unknown, fallback = 0) => { const n = Number(value); return Number.isFinite(n) ? n : fallback }
 const paths: Record<string, ReactNode> = {
   dashboard: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
   nodes: <><rect x="4" y="4" width="16" height="6" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/><path d="M8 7h.01M8 17h.01M12 7h5M12 17h5"/></>,
@@ -24,58 +24,17 @@ const paths: Record<string, ReactNode> = {
   copy: <><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></>,
 }
 
-export function Icon({ name, size = 18 }: { name: string; size?: number }) {
-  return <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>{paths[name] ?? paths.dashboard}</svg>
-}
-
+export function Icon({ name, size = 18 }: { name: string; size?: number }) { return <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>{paths[name] ?? paths.dashboard}</svg> }
 export function Badge({ value }: { value: string }) { return <span className={`badge badge-${value.toLowerCase().replaceAll('_', '-')}`}><i />{value.replaceAll('_', ' ')}</span> }
-export function Progress({ value, warn = false }: { value: number; warn?: boolean }) { return <div className="progress"><span className={warn && value > 80 ? 'warn' : ''} style={{ width: `${Math.max(0, Math.min(value, 100))}%` }} /></div> }
+export function Progress({ value, warn = false }: { value: number; warn?: boolean }) { const safeValue=Math.max(0,Math.min(finite(value),100)); return <div className="progress"><span className={warn && safeValue > 80 ? 'warn' : ''} style={{ width: `${safeValue}%` }} /></div> }
 export function Empty({ t }: { t: T }) { return <div className="empty-state"><span>—</span><p>{t('noRecords')}</p></div> }
 export function Spinner() { return <span className="spinner" aria-label="loading" /> }
-
-export function MetricCard({ label, value, hint, tone = 'blue', icon }: { label: string; value: string | number; hint: string; tone?: string; icon: string }) {
-  return <article className={`metric-card tone-${tone}`}><div className="metric-head"><span className="metric-icon"><Icon name={icon} /></span><span className="metric-trend">{hint}</span></div><strong>{value}</strong><span className="metric-label">{label}</span></article>
-}
-
-export function Panel({ title, eyebrow, action, children, className = '' }: { title: string; eyebrow?: string; action?: ReactNode; children: ReactNode; className?: string }) {
-  return <section className={`panel ${className}`}><header className="panel-head"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h2>{title}</h2></div>{action}</header>{children}</section>
-}
-
-export function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
-  return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.currentTarget === event.target) onClose() }}><section className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true"><header><h2>{title}</h2><button className="icon-btn" onClick={onClose}><Icon name="close" /></button></header>{children}</section></div>
-}
-
-export function Confirm({ t, title, destructive = false, onConfirm, onClose }: { t: T; title: string; destructive?: boolean; onConfirm: () => Promise<void>; onClose: () => void }) {
-  async function submit(event: FormEvent) { event.preventDefault(); await onConfirm(); onClose() }
-  return <Modal title={t('confirmAction')} onClose={onClose}><form onSubmit={submit} className="modal-body"><p className="confirm-title">{title}</p>{destructive && <p className="muted">{t('irreversible')}</p>}<div className="form-actions"><button type="button" className="button ghost" onClick={onClose}>{t('cancel')}</button><button className={`button ${destructive ? 'danger' : 'primary'}`}>{t('confirm')}</button></div></form></Modal>
-}
-
+export function MetricCard({ label, value, hint, tone = 'blue', icon }: { label: string; value: string | number; hint: string; tone?: string; icon: string }) { return <article className={`metric-card tone-${tone}`}><div className="metric-head"><span className="metric-icon"><Icon name={icon} /></span><span className="metric-trend">{hint}</span></div><strong>{value}</strong><span className="metric-label">{label}</span></article> }
+export function Panel({ title, eyebrow, action, children, className = '' }: { title: string; eyebrow?: string; action?: ReactNode; children: ReactNode; className?: string }) { return <section className={`panel ${className}`}><header className="panel-head"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h2>{title}</h2></div>{action}</header>{children}</section> }
+export function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) { return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.currentTarget === event.target) onClose() }}><section className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true"><header><h2>{title}</h2><button className="icon-btn" onClick={onClose}><Icon name="close" /></button></header>{children}</section></div> }
+export function Confirm({ t, title, destructive = false, onConfirm, onClose }: { t: T; title: string; destructive?: boolean; onConfirm: () => Promise<void>; onClose: () => void }) { async function submit(event: FormEvent) { event.preventDefault(); await onConfirm(); onClose() } return <Modal title={t('confirmAction')} onClose={onClose}><form onSubmit={submit} className="modal-body"><p className="confirm-title">{title}</p>{destructive && <p className="muted">{t('irreversible')}</p>}<div className="form-actions"><button type="button" className="button ghost" onClick={onClose}>{t('cancel')}</button><button className={`button ${destructive ? 'danger' : 'primary'}`}>{t('confirm')}</button></div></form></Modal> }
 export function Field({ label, children, className = '' }: { label: string; children: ReactNode; className?: string }) { return <label className={`field ${className}`}><span>{label}</span>{children}</label> }
-
-export function formatBytes(value: number) {
-  if (!value) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
-  return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`
-}
-
-export function formatDate(value: string | null, locale = 'en') {
-  if (!value) return '—'
-  return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
-}
-
-export function ago(value: string | null, locale = 'en') {
-  if (!value) return '—'
-  const diff = Math.round((new Date(value).getTime() - Date.now()) / 60000)
-  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' })
-  if (Math.abs(diff) < 60) return formatter.format(diff, 'minute')
-  return formatter.format(Math.round(diff / 60), 'hour')
-}
-
-export function LineChart({ values, secondary = [] }: { values: number[]; secondary?: number[] }) {
-  const all = [...values, ...secondary]
-  const max = Math.max(...all, 1)
-  const min = Math.min(...all, 0)
-  const points = (items: number[]) => items.map((value, index) => `${items.length === 1 ? 50 : index / (items.length - 1) * 100},${48 - (value - min) / Math.max(max - min, 1) * 42}`).join(' ')
-  return <div className="line-chart"><svg viewBox="0 0 100 50" preserveAspectRatio="none"><defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#5b8cff" stopOpacity=".28"/><stop offset="1" stopColor="#5b8cff" stopOpacity="0"/></linearGradient></defs>{values.length > 1 && <><polygon points={`0,50 ${points(values)} 100,50`} fill="url(#area)"/><polyline points={points(values)} className="chart-primary"/></>}{secondary.length > 1 && <polyline points={points(secondary)} className="chart-secondary"/>}</svg></div>
-}
+export function formatBytes(value: number) { const safeValue=Math.max(0,finite(value)); if (!safeValue) return '0 B'; const units=['B','KB','MB','GB','TB','PB']; const index=Math.min(Math.floor(Math.log(safeValue)/Math.log(1024)),units.length-1); return `${(safeValue/1024**index).toFixed(index?1:0)} ${units[index]}` }
+export function formatDate(value: string | null, locale = 'en') { if (!value) return '—'; const date=new Date(value); return Number.isNaN(date.getTime())?'—':new Intl.DateTimeFormat(locale,{dateStyle:'medium',timeStyle:'short'}).format(date) }
+export function ago(value: string | null, locale = 'en') { if (!value) return '—'; const timestamp=new Date(value).getTime(); if (!Number.isFinite(timestamp)) return '—'; const diff=Math.round((timestamp-Date.now())/60000); const formatter=new Intl.RelativeTimeFormat(locale,{numeric:'auto'}); if(Math.abs(diff)<60)return formatter.format(diff,'minute'); return formatter.format(Math.round(diff/60),'hour') }
+export function LineChart({ values, secondary = [] }: { values: number[]; secondary?: number[] }) { const all=[...values,...secondary].map(value=>finite(value)); const max=Math.max(...all,1); const min=Math.min(...all,0); const points=(items:number[])=>items.map((value,index)=>`${items.length===1?50:index/(items.length-1)*100},${48-(finite(value)-min)/Math.max(max-min,1)*42}`).join(' '); return <div className="line-chart"><svg viewBox="0 0 100 50" preserveAspectRatio="none"><defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#5b8cff" stopOpacity=".28"/><stop offset="1" stopColor="#5b8cff" stopOpacity="0"/></linearGradient></defs>{values.length>1&&<><polygon points={`0,50 ${points(values)} 100,50`} fill="url(#area)"/><polyline points={points(values)} className="chart-primary"/></>}{secondary.length>1&&<polyline points={points(secondary)} className="chart-secondary"/>}</svg></div> }
