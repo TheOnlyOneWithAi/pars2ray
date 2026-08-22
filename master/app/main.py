@@ -24,6 +24,15 @@ from app.services.auth import ensure_seed
 from app.services.rate_limit import enforce
 from app.services.scheduler import start_scheduler, stop_scheduler
 
+LEGACY_DISABLED_PREFIXES = (
+    "/api/v1/plans",
+    "/api/v1/subscriptions",
+    "/api/v1/routes",
+    "/api/v1/experiments",
+    "/api/v1/optimizer",
+    "/api/v1/ai/configure-node",
+)
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -51,6 +60,8 @@ def _host_allowed(request: Request) -> bool:
 async def security_and_rate_limit(request: Request, call_next):
     if not _host_allowed(request) and request.url.path not in {"/health", "/api/v1/health"}:
         return PlainTextResponse("Invalid host header", status_code=400)
+    if any(request.url.path == prefix or request.url.path.startswith(prefix + "/") for prefix in LEGACY_DISABLED_PREFIXES):
+        return JSONResponse(status_code=404, content={"detail": "feature_removed"})
     if request.url.path not in {"/health", "/api/v1/health", "/docs", "/redoc", "/openapi.json"}:
         try:
             enforce(request)
