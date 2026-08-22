@@ -83,6 +83,23 @@ def _client_id(username: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"pars2ray:client:{username.lower()}"))
 
 
+def _node_server(db: Session, route: Route) -> str:
+    """Return the node endpoint host, never a transport Host/SNI value."""
+    for node_key in route.node_keys:
+        node = db.scalar(select(Node).where(Node.node_key == node_key))
+        if not node or not node.endpoint:
+            continue
+        endpoint = node.endpoint.strip().split("://", 1)[-1].split("/", 1)[0]
+        if endpoint.startswith("["):
+            end = endpoint.find("]")
+            if end >= 0:
+                return endpoint[1:end]
+        if endpoint.count(":") == 1:
+            return endpoint.rsplit(":", 1)[0]
+        return endpoint
+    return ""
+
+
 def _route_links(db: Session, sub: Subscription, user: User) -> list[str]:
     rows: list[str] = []
     routes = db.scalars(select(Route).where(Route.is_active.is_(True)).order_by(Route.id)).all()
@@ -95,13 +112,15 @@ def _route_links(db: Session, sub: Subscription, user: User) -> list[str]:
             cfg = json.loads(decrypt_secret(route.config_enc)) if route.config_enc else {}
         except Exception:
             cfg = {}
-        server = str(cfg.get("server") or cfg.get("host") or "")
-        if not server and route.node_keys:
-            node = db.scalar(select(Node).where(Node.node_key == route.node_keys[0]))
-            if node:
-                server = node.endpoint.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0]
+
+        # The node endpoint is the authoritative destination. `host` is a
+        # transport Host header and must not become the VLESS destination.
+        server = _node_server(db, route)
+        if not server:
+            server = str(cfg.get("server_address") or cfg.get("address") or cfg.get("server") or "").strip()
         if not server:
             continue
+
         port = int(cfg.get("port", 443))
         name = quote(route.name, safe="")
         transport = route.transport
@@ -165,20 +184,13 @@ def _all_links(db: Session, sub: Subscription, user: User) -> list[str]:
 
 
 def _html_template(db: Session) -> str:
-    return _setting(db, "subscription.html", """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{title}}</title><style>body{font-family:system-ui;max-width:900px;margin:40px auto;padding:20px;background:#0b1020;color:#fff}a{color:#7dd3fc;word-break:break-all}.card{background:#151b2e;padding:18px;border-radius:14px;margin:14px 0}pre{white-space:pre-wrap}</style></head><body><h1>{{title}}</h1><div class="card"><p>User: {{username}}</p><p>Traffic: {{used_gb}} / {{quota_gb}}</p><p>Expires: {{expires_at}}</p><p>Subscription: <a href="{{subscription_url}}">{{subscription_url}}</a></p></div><div class="card"><h2>Configurations</h2>{{configs_html}}</div></body></html>""")
+    return _setting(db, "subscription.html", """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{title}}</title><style>body{font-family:system-ui;max-width:900px;margin:40px auto;padding:20px;background:#0b1020;color:#fff}a{color:#7dd3fc;word-break:break-all}.card{background:#151b2e;padding:18px;border-radius:14px;margin:14px 0}pre{white-space:pre-wrap}</style></head><body><h1>{{title}}</h1><div class="card"><p>User: {{username}}</p><p>Traffic: {{used_gb}} / {{quota_gb}}</p><p>Remaining: {{remaining_gb}} ({{remaining_percent}}%)</p><p>Expires: {{expires_at}}</p><p>Days remaining: {{days_remaining}}</p><p>Subscription: <a href="{{subscription_url}}">{{subscription_url}}</a></p><p><a href="{{raw_url}}">Raw configuration subscription</a></p></div><div class="card"><h2>Configurations</h2>{{vless_links}}</div><div class="card"><h2>Connection instructions</h2>{{connection_instructions}}</div><div class="card"><h2>All configurations</h2><pre>{{configs}}</pre></div></body></html>""")
 
 
 def _render_template(template: str, values: dict[str, str]) -> str:
     rendered = template
     for key, value in values.items():
-        # Support both normal placeholders and placeholders escaped for Markdown,
-        # plus URL-encoded placeholders that can otherwise become %7B%7B...%7D%7D.
-        variants = {
-            "{{" + key + "}}",
-            "{{" + key.replace("_", r"\_") + "}}",
-            quote("{{" + key + "}}", safe=""),
-            quote("{{" + key.replace("_", r"\_") + "}}", safe=""),
-        }
+        variants = {"{{" + key + "}}", "{{" + key.replace("_", r"\_") + "}}", quote("{{" + key + "}}", safe=""), quote("{{" + key.replace("_", r"\_") + "}}", safe="")}
         for placeholder in variants:
             rendered = rendered.replace(placeholder, value)
     return rendered
@@ -192,32 +204,11 @@ def _html_response(username: str, request: Request, db: Session, sub: Subscripti
     remaining = max(quota - used, 0.0) if not unlimited else 0.0
     remaining_percent = 100.0 if unlimited else max(min((remaining / quota) * 100.0, 100.0), 0.0)
     days_remaining = max((expires_at - utcnow()).days, 0) if expires_at else 0
-    quota_text = "Unlimited" if unlimited else f"{quota:.2f}"
-    remaining_text = "Unlimited" if unlimited else f"{remaining:.2f}"
-    remaining_percent_text = "100" if unlimited else f"{remaining_percent:.1f}"
-    expires_text = expires_at.isoformat() if expires_at else "Unlimited"
     subscription_url = f"{_public_subscription_base(request, db)}{quote(username, safe='')}"
     raw_url = subscription_url.rstrip("/") + "/raw"
     configs_html = "".join(f'<a href="{html.escape(link, quote=True)}">{html.escape(link)}</a><br>' for link in links) or "<p>No active configurations.</p>"
-    values = {
-        "title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")),
-        "username": html.escape(user.username),
-        "used_gb": f"{used:.2f}",
-        "quota_gb": quota_text,
-        "remaining_gb": remaining_text,
-        "remaining_percent": remaining_percent_text,
-        "expires_at": html.escape(expires_text),
-        "days_remaining": str(days_remaining),
-        "subscription_url": html.escape(subscription_url, quote=True),
-        "raw_url": html.escape(raw_url, quote=True),
-        "configs_html": configs_html,
-        "vless_links": configs_html,
-        "connection_instructions": "<ol><li>Add the subscription URL to your Xray/V2Ray compatible client.</li><li>Alternatively import an individual configuration above.</li><li>Refresh the subscription when configurations change.</li><li>Keep the subscription URL private.</li></ol>",
-        "configs": html.escape("\n".join(links)),
-        "config_count": str(len(links)),
-    }
-    rendered = _render_template(_html_template(db), values)
-    return HTMLResponse(rendered)
+    values = {"title": html.escape(_setting(db, "subscription.title", "Pars2Ray Subscription")), "username": html.escape(user.username), "used_gb": f"{used:.2f}", "quota_gb": "Unlimited" if unlimited else f"{quota:.2f}", "remaining_gb": "Unlimited" if unlimited else f"{remaining:.2f}", "remaining_percent": "100" if unlimited else f"{remaining_percent:.1f}", "expires_at": html.escape(expires_at.isoformat() if expires_at else "Unlimited"), "days_remaining": str(days_remaining), "subscription_url": html.escape(subscription_url, quote=True), "raw_url": html.escape(raw_url, quote=True), "vless_links": configs_html, "connection_instructions": "<ol><li>Add the subscription URL to your Xray/V2Ray compatible client.</li><li>Alternatively import an individual configuration above.</li><li>Refresh the subscription when configurations change.</li><li>Keep the subscription URL private.</li></ol>", "configs": html.escape("\n".join(links)), "config_count": str(len(links))}
+    return HTMLResponse(_render_template(_html_template(db), values))
 
 
 def _headers(db: Session, user: User, sub: Subscription) -> dict[str, str]:
@@ -247,10 +238,7 @@ def update_subscription_settings(payload: dict, db: Session = Depends(get_db), u
         path = "/" + path
     if not path.endswith("/"):
         path += "/"
-    if domain:
-        _set_setting(db, "subscription.domain", domain)
-    else:
-        _set_setting(db, "subscription.domain", "")
+    _set_setting(db, "subscription.domain", domain)
     _set_setting(db, "subscription.port", str(port))
     _set_setting(db, "subscription.path", path)
     _set_setting(db, "subscription.scheme", scheme)
