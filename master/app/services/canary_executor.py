@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+from threading import Lock
 
 from sqlalchemy import select
 
@@ -14,6 +17,7 @@ from app.services.canary_runner import CanaryObservation, CanaryRunner
 from app.services.experiment_lab import ExperimentPolicy
 
 logger = logging.getLogger(__name__)
+_canary_lock = Lock()
 
 
 class CanaryExecutionError(RuntimeError):
@@ -27,10 +31,25 @@ def _find_candidate(db, candidate_id: str) -> Route | None:
         return db.scalar(select(Route).where(Route.name == candidate_id))
 
 
+def _stable_hash(value: object) -> str:
+    if isinstance(value, bytes):
+        payload = value
+    elif isinstance(value, str):
+        payload = value.encode("utf-8")
+    else:
+        payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 async def execute_canary(candidate_id: str) -> dict:
     """Run one guarded canary and promote only after deterministic gates pass."""
     if not getattr(settings, "canary_auto_apply", False):
         return {"action": "DRY_RUN", "candidate_id": candidate_id, "reason": "Canary auto-apply is disabled."}
+
+    # Prevent overlapping canaries in the same master process. The DB checks below
+    # remain authoritative for route state; this lock only removes local races.
+    if not _canary_lock.acquire(blocking=False):
+        raise CanaryExecutionError("another canary execution is already running")
 
     db = SessionLocal()
     applied_nodes: list[Node] = []
@@ -60,6 +79,8 @@ async def execute_canary(candidate_id: str) -> dict:
         nodes = [by_key[key] for key in candidate_keys]
 
         config = decrypt_secret(candidate.config_enc)
+        config_hash = _stable_hash(config)
+        route_hash = _stable_hash({"route_id": candidate.id, "node_keys": candidate_keys, "core": candidate.core, "protocol": candidate.protocol, "transport": candidate.transport})
         node = nodes[0]
         await agent_client.apply_config(node, {"config": config, "mode": "CANARY"})
         applied_nodes.append(node)
@@ -77,7 +98,7 @@ async def execute_canary(candidate_id: str) -> dict:
         policy = ExperimentPolicy(min_improvement=settings.ai_switch_min_improvement, required_wins=settings.ai_required_wins)
         result = CanaryRunner(policy).evaluate(active.score, observation, candidate.consecutive_wins + 1)
 
-        db.add(Experiment(candidate_id=str(candidate.id), route_hash=str(candidate.id), config_hash=str(candidate.id), node_keys=candidate_keys, core=candidate.core, protocol=candidate.protocol, transport=candidate.transport, score=observation.score, latency_ms=observation.latency_ms, jitter_ms=observation.jitter_ms, throughput_mbps=observation.throughput_mbps, packet_loss_percent=observation.packet_loss_percent, stability_percent=observation.stability_percent, level="CANARY", decision=result.action, metadata_json={"availability_percent": observation.availability_percent}))
+        db.add(Experiment(candidate_id=str(candidate.id), route_hash=route_hash, config_hash=config_hash, node_keys=candidate_keys, core=candidate.core, protocol=candidate.protocol, transport=candidate.transport, score=observation.score, latency_ms=observation.latency_ms, jitter_ms=observation.jitter_ms, throughput_mbps=observation.throughput_mbps, packet_loss_percent=observation.packet_loss_percent, stability_percent=observation.stability_percent, level="CANARY", decision=result.action, metadata_json={"availability_percent": observation.availability_percent}))
 
         if result.action != "PROMOTE":
             await agent_client.rollback(node)
@@ -100,7 +121,7 @@ async def execute_canary(candidate_id: str) -> dict:
         candidate.is_golden = True
         candidate.consecutive_wins += 1
         candidate.score = result.score
-        db.add(AuditLog(action="CANARY_PROMOTE", resource_type="route", resource_id=str(candidate.id), metadata_json={"score": result.score, "nodes": len(applied_nodes), "consecutive_wins": candidate.consecutive_wins}))
+        db.add(AuditLog(action="CANARY_PROMOTE", resource_type="route", resource_id=str(candidate.id), metadata_json={"score": result.score, "nodes": len(applied_nodes), "consecutive_wins": candidate.consecutive_wins, "route_hash": route_hash, "config_hash": config_hash}))
         db.commit()
         return {"action": "PROMOTE", "candidate_id": candidate_id, "score": result.score, "reason": result.reason}
     except Exception as exc:
@@ -113,6 +134,7 @@ async def execute_canary(candidate_id: str) -> dict:
         raise CanaryExecutionError(str(exc)) from exc
     finally:
         db.close()
+        _canary_lock.release()
 
 
 def execute_canary_sync(candidate_id: str) -> dict:
