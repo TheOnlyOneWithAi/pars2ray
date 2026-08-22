@@ -55,7 +55,7 @@ def _ensure_owner(user: User, client: Subscription) -> None:
 def _ensure_plan_capacity(db: Session, user_id: int, plan: Plan, exclude_id: int | None = None) -> None:
     if plan.max_devices < 1:
         raise HTTPException(status_code=422, detail="invalid_plan_device_limit")
-    query = select(func.count(Subscription.id)).where(Subscription.user_id == user_id, Subscription.enabled.is_(True))
+    query = select(func.count(Subscription.id)).where(Subscription.user_id == user_id, Subscription.plan_id == plan.id, Subscription.enabled.is_(True))
     if exclude_id is not None:
         query = query.where(Subscription.id != exclude_id)
     active_count = int(db.scalar(query) or 0)
@@ -107,7 +107,7 @@ def create_client(payload: ClientCreate, request: Request, db: Session = Depends
         raise HTTPException(status_code=403, detail="reseller_can_only_manage_self")
     if payload.single_active and db.scalar(select(Subscription.id).where(Subscription.user_id == target.id, Subscription.enabled.is_(True))):
         raise HTTPException(status_code=409, detail="active_client_exists")
-    if not payload.single_active and plan is not None:
+    if plan is not None:
         _ensure_plan_capacity(db, target.id, plan)
     node_keys = list(dict.fromkeys(key.strip().upper() for key in payload.node_keys if key.strip()))
     if len(node_keys) > 20:
@@ -118,7 +118,7 @@ def create_client(payload: ClientCreate, request: Request, db: Session = Depends
     quota = _resolve_quota(payload, target, plan)
     if quota < 0:
         raise HTTPException(status_code=422, detail="invalid_quota")
-    if plan is None:
+    if plan is None and (payload.quota_gb is not None or payload.duration_days is not None or payload.expires_at is not None):
         target.quota_gb = quota
         target.expires_at = expires_at
     token = random_token(48)
@@ -137,24 +137,37 @@ def update_client(client_id: int, payload: ClientUpdate, request: Request, db: S
     _ensure_owner(user, client)
     target = db.get(User, client.user_id)
     plan = db.get(Plan, client.plan_id) if client.plan_id is not None else None
+
+    if payload.clear_plan:
+        client.plan_id = None
+        plan = None
+        if target is not None:
+            client.expires_at = target.expires_at
+
     if payload.plan_id is not None:
+        if payload.clear_plan:
+            raise HTTPException(status_code=422, detail="clear_plan_and_plan_id_are_mutually_exclusive")
         plan = db.get(Plan, payload.plan_id)
         if not plan or not plan.enabled:
             raise HTTPException(status_code=404, detail="plan_not_found")
         if client.enabled:
             _ensure_plan_capacity(db, client.user_id, plan, exclude_id=client.id)
         client.plan_id = plan.id
+
     if payload.node_keys is not None:
         keys = list(dict.fromkeys(key.strip().upper() for key in payload.node_keys if key.strip()))
         if len(keys) > 20:
             raise HTTPException(status_code=422, detail="too_many_nodes")
         client.node_keys = keys
+
     if payload.quota_gb is not None and client.plan_id is None and target is not None:
         target.quota_gb = float(payload.quota_gb)
+
     if payload.duration_days is not None:
         client.expires_at = utcnow() + timedelta(days=payload.duration_days) if payload.duration_days > 0 else None
         if client.plan_id is None and target is not None:
             target.expires_at = client.expires_at
+
     if payload.enabled is not None:
         if payload.enabled:
             plan = db.get(Plan, client.plan_id) if client.plan_id is not None else None
@@ -164,12 +177,14 @@ def update_client(client_id: int, payload: ClientUpdate, request: Request, db: S
             if expires_at is not None and expires_at <= utcnow():
                 raise HTTPException(status_code=422, detail="expires_at_must_be_future")
         client.enabled = payload.enabled
+
     if payload.expires_at is not None:
         if payload.expires_at <= utcnow():
             raise HTTPException(status_code=422, detail="expires_at_must_be_future")
         client.expires_at = payload.expires_at
         if client.plan_id is None and target is not None:
             target.expires_at = payload.expires_at
+
     record(db, user, "client.update", "client", str(client.id), request_ip(request))
     db.commit()
     db.refresh(client)
