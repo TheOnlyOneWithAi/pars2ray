@@ -36,27 +36,36 @@ def capabilities(user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "OPE
 @router.get("/routes/{route_id}")
 def get_xray_route(route_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "OPERATOR"))) -> dict[str, Any]:
     route = db.get(Route, route_id)
-    if not route: raise HTTPException(status_code=404, detail="route_not_found")
+    if not route:
+        raise HTTPException(status_code=404, detail="route_not_found")
     return {"id": route.id, "name": route.name, "node_keys": route.node_keys, "core": route.core, "protocol": route.protocol, "transport": route.transport, "config": _config(route)}
 
 
 @router.put("/routes/{route_id}")
 def update_xray_route(route_id: int, payload: dict[str, Any], db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "OPERATOR"))) -> dict[str, Any]:
     route = db.get(Route, route_id)
-    if not route: raise HTTPException(status_code=404, detail="route_not_found")
+    if not route:
+        raise HTTPException(status_code=404, detail="route_not_found")
     core = payload.get("core", route.core)
     protocol = payload.get("protocol", route.protocol)
     transport = payload.get("transport", route.transport)
-    if core not in {"xray", "sing-box"}: raise HTTPException(status_code=422, detail="unsupported_core")
-    if protocol not in PROTOCOLS: raise HTTPException(status_code=422, detail="unsupported_protocol")
-    if transport not in TRANSPORTS: raise HTTPException(status_code=422, detail="unsupported_transport")
-    if core == "xray" and protocol == "hysteria2": raise HTTPException(status_code=422, detail="hysteria2_requires_sing_box")
+    if core not in {"xray", "sing-box"}:
+        raise HTTPException(status_code=422, detail="unsupported_core")
+    if protocol not in PROTOCOLS:
+        raise HTTPException(status_code=422, detail="unsupported_protocol")
+    if transport not in TRANSPORTS:
+        raise HTTPException(status_code=422, detail="unsupported_transport")
+    if core == "xray" and protocol == "hysteria2":
+        raise HTTPException(status_code=422, detail="hysteria2_requires_sing_box")
     config = payload.get("config", {})
-    if not isinstance(config, dict): raise HTTPException(status_code=422, detail="config_must_be_object")
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=422, detail="config_must_be_object")
     node_keys = [str(x) for x in payload.get("node_keys", route.node_keys)]
-    if not node_keys or len(node_keys) > 20: raise HTTPException(status_code=422, detail="invalid_node_keys")
+    if not node_keys or len(node_keys) > 20:
+        raise HTTPException(status_code=422, detail="invalid_node_keys")
     existing = {n.node_key for n in db.scalars(select(Node).where(Node.node_key.in_(node_keys))).all()}
-    if set(node_keys) != existing: raise HTTPException(status_code=422, detail="unknown_node")
+    if set(node_keys) != existing:
+        raise HTTPException(status_code=422, detail="unknown_node")
     route.core, route.protocol, route.transport, route.node_keys = core, protocol, transport, node_keys
     route.config_enc = encrypt_secret(json.dumps(config, separators=(",", ":")))
     db.commit()
@@ -66,7 +75,8 @@ def update_xray_route(route_id: int, payload: dict[str, Any], db: Session = Depe
 @router.post("/routes/{route_id}/validate")
 def validate_xray_route(route_id: int, payload: dict[str, Any] | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "OPERATOR"))) -> dict[str, Any]:
     route = db.get(Route, route_id)
-    if not route: raise HTTPException(status_code=404, detail="route_not_found")
+    if not route:
+        raise HTTPException(status_code=404, detail="route_not_found")
     cfg = (payload or {}).get("config", _config(route))
     errors: list[str] = []
     try:
@@ -76,12 +86,14 @@ def validate_xray_route(route_id: int, payload: dict[str, Any] | None = None, db
     inbound = (built.get("inbounds") or [{}])[0]
     try:
         port = int(inbound.get("port", inbound.get("listen_port", 443)))
-        if port not in range(1, 65536): errors.append("invalid_port")
+        if port not in range(1, 65536):
+            errors.append("invalid_port")
     except (TypeError, ValueError):
         errors.append("invalid_port")
     if route.core == "xray" and cfg.get("security") == "reality":
         reality = cfg.get("reality", {})
-        if not reality.get("private_key") or not reality.get("short_id"): errors.append("reality_requires_private_key_and_short_id")
+        if not reality.get("private_key") or not reality.get("short_id"):
+            errors.append("reality_requires_private_key_and_short_id")
     return {"ok": not errors, "errors": errors, "config": built}
 
 
