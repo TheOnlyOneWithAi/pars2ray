@@ -16,7 +16,7 @@ from app.api.client_manager import router as client_manager_router
 from app.api.direct_configs import router as direct_configs_router
 from app.api.inbounds import router as inbounds_router
 from app.api.routes import router
-from app.api.protocols import public_router, router as protocols_router
+from app.api.protocols import router as protocols_router
 from app.api.subscription_server import public_router as subscription_public_router, router as subscription_router
 from app.api.secure_subscription import public_router as secure_subscription_public_router
 from app.api.ai_settings import router as ai_settings_router
@@ -26,6 +26,7 @@ from app.api.user_provisioning import router as user_provisioning_router
 from app.core.config import settings
 from app.db.base import SessionLocal
 from app.services.auth import ensure_seed
+from app.services.inbound_store import ensure_tables as ensure_inbound_tables
 from app.services.rate_limit import enforce
 from app.services.scheduler import start_scheduler, stop_scheduler
 
@@ -39,6 +40,7 @@ async def lifespan(_: FastAPI):
     db = SessionLocal()
     try:
         ensure_seed(db)
+        ensure_inbound_tables(db.get_bind())
     finally:
         db.close()
     start_scheduler()
@@ -106,7 +108,6 @@ app.include_router(router)
 app.include_router(protocols_router)
 app.include_router(subscription_public_router)
 app.include_router(secure_subscription_public_router)
-app.include_router(public_router)
 app.include_router(node_management_router)
 app.include_router(xray_management_router)
 app.include_router(client_manager_router)
