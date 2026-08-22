@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -22,7 +22,7 @@ class ManagedUserCreate(BaseModel):
     is_active: bool = True
     quota_gb: float = Field(default=0, ge=0)
     duration_days: int = Field(default=0, ge=0, le=36500)
-    expires_at: object | None = None
+    expires_at: datetime | None = None
     node_keys: list[str] = Field(default_factory=list, max_length=20)
 
 class ManagedUserUpdate(BaseModel):
@@ -30,11 +30,11 @@ class ManagedUserUpdate(BaseModel):
     is_active: bool | None = None
     quota_gb: float | None = Field(default=None, ge=0)
     duration_days: int | None = Field(default=None, ge=0, le=36500)
-    expires_at: object | None = None
+    expires_at: datetime | None = None
     node_keys: list[str] | None = Field(default=None, max_length=20)
 
 
-def _expiry(payload: ManagedUserCreate | ManagedUserUpdate, current=None):
+def _expiry(payload: ManagedUserCreate | ManagedUserUpdate, current: datetime | None = None) -> datetime | None:
     if payload.expires_at is not None:
         return payload.expires_at
     days = getattr(payload, "duration_days", None)
@@ -56,15 +56,29 @@ def _nodes(db: Session, keys: list[str]) -> list[str]:
     return normalized
 
 
-def _out(user: User, sub: Subscription | None) -> dict:
-    return {"id": user.id, "username": user.username, "email": user.email, "role": user.role, "is_active": user.is_active, "quota_gb": float(user.quota_gb or 0), "used_gb": float(user.used_gb or 0), "expires_at": user.expires_at, "unlimited_quota": float(user.quota_gb or 0) == 0, "unlimited_time": user.expires_at is None, "subscription_id": sub.id if sub else None, "subscription_token": decrypt_token(sub) if sub else None, "node_keys": list(sub.node_keys or []) if sub else []}
-
-
 def decrypt_token(sub: Subscription) -> str | None:
     if not sub.token_enc:
         return None
     from app.core.security import decrypt_secret
     return decrypt_secret(sub.token_enc)
+
+
+def _out(user: User, sub: Subscription | None) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "role": user.role,
+        "is_active": user.is_active,
+        "quota_gb": float(user.quota_gb or 0),
+        "used_gb": float(user.used_gb or 0),
+        "expires_at": user.expires_at,
+        "unlimited_quota": float(user.quota_gb or 0) == 0,
+        "unlimited_time": user.expires_at is None,
+        "subscription_id": sub.id if sub else None,
+        "subscription_token": decrypt_token(sub) if sub else None,
+        "node_keys": list(sub.node_keys or []) if sub else [],
+    }
 
 @router.post("", status_code=201)
 def create_user(payload: ManagedUserCreate, request: Request, db: Session = Depends(get_db), actor: User = Depends(require_roles("SUPER_ADMIN", "ADMIN"))) -> dict:
@@ -106,9 +120,8 @@ def update_user(user_id: int, payload: ManagedUserUpdate, request: Request, db: 
         user.is_active = payload.is_active
     if payload.quota_gb is not None:
         user.quota_gb = payload.quota_gb
-    expiry = _expiry(payload, user.expires_at)
     if payload.duration_days is not None or payload.expires_at is not None:
-        user.expires_at = expiry
+        user.expires_at = _expiry(payload, user.expires_at)
     sub = db.scalar(select(Subscription).where(Subscription.user_id == user.id).order_by(Subscription.id.desc()))
     if not sub:
         raw = random_token(48)
