@@ -7,7 +7,7 @@ from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.subscription_server import _all_links, _headers, _public_subscription_base, _subscription_path, subscription, subscription_raw
+from app.api.subscription_server import _all_links, _headers, _public_subscription_base, _subscription_path, subscription
 from app.core.security import token_hash, utcnow
 from app.db.base import get_db
 from app.models.entities import Plan, Subscription, User
@@ -28,6 +28,8 @@ def _lookup(token: str, db: Session) -> tuple[Subscription, User]:
     if expires_at is not None and expires_at <= utcnow():
         raise HTTPException(status_code=404, detail="subscription_not_found")
     plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+    if sub.plan_id is not None and plan is None:
+        raise HTTPException(status_code=404, detail="subscription_not_found")
     quota = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
     used = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
     if quota > 0 and used >= quota:
@@ -76,22 +78,21 @@ def secure_subscription_raw(token: str, db: Session = Depends(get_db)) -> PlainT
 
 @public_router.get("/link/{value}")
 def compatibility_subscription(value: str, request: Request, db: Session = Depends(get_db)) -> Response:
-    try:
-        sub, user = _lookup(value, db)
-    except HTTPException:
-        return subscription(value, request, db)
+    # Compatibility is token-only. Never fall back to username lookup.
+    sub, user = _lookup(value, db)
     response = subscription(user.username, request, db)
     _rewrite_subscription_url(response, f"{_public_subscription_base(request, db)}{quote(user.username, safe='')}", _secure_url(request, db, value))
     response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
     return response
 
 
 @public_router.get("/link/{value}/raw")
-def compatibility_subscription_raw(value: str, request: Request, db: Session = Depends(get_db)) -> PlainTextResponse:
-    try:
-        sub, user = _lookup(value, db)
-    except HTTPException:
-        return subscription_raw(value, request, db)
+def compatibility_subscription_raw(value: str, db: Session = Depends(get_db)) -> PlainTextResponse:
+    sub, user = _lookup(value, db)
     response = PlainTextResponse("\n".join(_all_links(db, sub, user)), headers=_headers(db, user, sub), media_type="text/plain; charset=utf-8")
     response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
     return response
