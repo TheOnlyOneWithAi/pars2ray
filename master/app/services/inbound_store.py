@@ -63,13 +63,16 @@ def select_inbound(db: Session, inbound_id: int) -> dict[str, Any] | None:
 
 def delete_inbound(db: Session, inbound_id: int) -> bool:
     result = db.execute(delete(inbounds).where(inbounds.c.id == inbound_id))
-    if result.rowcount:
-        db.execute(
-            update(clients)
-            .where(clients.c.inbound_ids.contains([inbound_id]))
-        )
+    if not result.rowcount:
+        db.commit()
+        return False
+    for row in db.execute(select(clients.c.id, clients.c.inbound_ids)).all():
+        ids = list(row.inbound_ids or [])
+        cleaned = [item for item in ids if int(item) != int(inbound_id)]
+        if cleaned != ids:
+            db.execute(update(clients).where(clients.c.id == row.id).values(inbound_ids=cleaned))
     db.commit()
-    return bool(result.rowcount)
+    return True
 
 
 def mark_selected(db: Session, inbound_id: int) -> dict[str, Any] | None:
