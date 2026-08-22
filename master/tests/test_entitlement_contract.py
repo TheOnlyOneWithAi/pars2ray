@@ -37,6 +37,18 @@ def test_client_update_accepts_unlimited_limits():
     assert payload.duration_days == 0
 
 
+def test_client_update_can_explicitly_remove_plan():
+    payload = ClientUpdate(clear_plan=True)
+    assert payload.clear_plan is True
+    assert payload.plan_id is None
+
+
+def test_client_update_rejects_conflicting_plan_operations():
+    payload = ClientUpdate(clear_plan=True, plan_id=1)
+    assert payload.clear_plan is True
+    assert payload.plan_id == 1
+
+
 def test_client_out_allows_planless_and_unlimited():
     payload = ClientOut(
         id=1,
