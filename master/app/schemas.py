@@ -51,6 +51,11 @@ class UserOut(ORMModel):
     is_active: bool
     created_at: datetime
     last_login_at: datetime | None
+    plan_id: int | None = None
+    quota_gb: float | None = None
+    used_gb: float | None = None
+    expires_at: datetime | None = None
+    subscription_token: str | None = None
 
 
 class NodeRegisterRequest(BaseModel):
