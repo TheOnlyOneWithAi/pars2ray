@@ -4,142 +4,117 @@ set -Eeuo pipefail
 INSTALL_DIR="${PARS2RAY_INSTALL_DIR:-/opt/pars2ray}"
 ENV_FILE="/etc/pars2ray/pars2ray.env"
 CREDENTIALS_FILE="/etc/pars2ray/credentials"
+CLI_PATH="/usr/local/bin/pars2ray"
 
 fail(){ echo "[pars2ray] ERROR: $*" >&2; exit 1; }
+[[ "$(id -u)" == 0 ]] || fail "Run as root."
 [[ -d "$INSTALL_DIR" ]] || fail "Pars2Ray is not installed at $INSTALL_DIR"
-
-systemctl_cmd(){ command -v systemctl >/dev/null 2>&1 || fail "systemctl is required"; systemctl "$@"; }
+command -v systemctl >/dev/null 2>&1 || fail "systemctl is required"
 
 load_env(){
   [[ -r "$ENV_FILE" ]] || fail "Pars2Ray environment file not found: $ENV_FILE"
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" || "${line#\#}" != "$line" || "$line" != *=* ]] && continue
-    key="${line%%=*}"
-    value="${line#*=}"
-    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    export "$key=$value"
-  done < "$ENV_FILE"
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
 }
 
-# systemd is the source of truth for the running master process. This avoids
-# subtle differences between EnvironmentFile parsing and shell parsing.
-load_runtime_env(){
-  load_env
-  local service_env key value
-  service_env="$(systemctl show pars2ray-master.service --property=Environment --value 2>/dev/null || true)"
-  [[ -n "$service_env" ]] || return 0
-  for key in DATABASE_URL REDIS_URL JWT_SECRET JWT_ALGORITHM MASTER_SECRET ADMIN_USER ADMIN_PASSWORD ADMIN_EMAIL PARS2RAY_DATA_DIR PANEL_HTTP_PORT; do
-    value="$(printf '%s\n' "$service_env" | tr ' ' '\n' | sed -n "s/^${key}=//p" | head -n 1)"
-    [[ -n "$value" ]] && export "$key=$value"
+runtime_python(){ [[ -x "$INSTALL_DIR/.venv/bin/python" ]] || fail "Pars2Ray Python environment not found"; printf '%s' "$INSTALL_DIR/.venv/bin/python"; }
+
+restart_services(){
+  systemctl daemon-reload
+  systemctl restart pars2ray-master.service
+  systemctl restart pars2ray-worker.service
+}
+
+wait_health(){
+  local port="${PANEL_HTTP_PORT:-8000}" i
+  for i in $(seq 1 30); do
+    if curl -fsS --connect-timeout 1 --max-time 2 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then return 0; fi
+    sleep 1
   done
+  journalctl -u pars2ray-master.service -n 80 --no-pager >&2 || true
+  return 1
 }
 
 verify_live_login(){
   local user="$1" password="$2" port="${PANEL_HTTP_PORT:-8000}"
-  PARS2RAY_VERIFY_USER="$user" PARS2RAY_VERIFY_PASSWORD="$password" PARS2RAY_VERIFY_PORT="$port" PYTHONPATH="$INSTALL_DIR/master" "$INSTALL_DIR/.venv/bin/python" - <<'PY'
+  PARS2RAY_VERIFY_USER="$user" PARS2RAY_VERIFY_PASSWORD="$password" PARS2RAY_VERIFY_PORT="$port" PYTHONPATH="$INSTALL_DIR/master" "$(runtime_python)" - <<'PY'
 import json, os, sys, urllib.error, urllib.request
-user = os.environ["PARS2RAY_VERIFY_USER"]
-password = os.environ["PARS2RAY_VERIFY_PASSWORD"]
-port = os.environ["PARS2RAY_VERIFY_PORT"]
-url = f"http://127.0.0.1:{port}/api/v1/auth/login"
-payload = json.dumps({"username": user, "password": password}).encode()
-request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+url=f"http://127.0.0.1:{os.environ['PARS2RAY_VERIFY_PORT']}/api/v1/auth/login"
+payload=json.dumps({'username':os.environ['PARS2RAY_VERIFY_USER'],'password':os.environ['PARS2RAY_VERIFY_PASSWORD']}).encode()
+req=urllib.request.Request(url,data=payload,headers={'Content-Type':'application/json'},method='POST')
 try:
-    with urllib.request.urlopen(request, timeout=10) as response:
-        body = response.read().decode("utf-8", "replace")
-        if response.status != 200:
-            print(f"HTTP {response.status}: {body[:300]}", file=sys.stderr)
-            raise SystemExit(1)
-        result = json.loads(body)
-        if not result.get("access_token") or not result.get("refresh_token"):
-            print("Login API returned an incomplete token response", file=sys.stderr)
-            raise SystemExit(1)
-except urllib.error.HTTPError as exc:
-    body = exc.read().decode("utf-8", "replace")
-    print(f"Live login rejected credentials (HTTP {exc.code}): {body[:300]}", file=sys.stderr)
-    raise SystemExit(2)
-except Exception as exc:
-    print(f"Could not verify live panel login: {exc}", file=sys.stderr)
-    raise SystemExit(3)
+    with urllib.request.urlopen(req,timeout=10) as r:
+        body=r.read().decode('utf-8','replace')
+        if r.status != 200: raise RuntimeError(f'HTTP {r.status}: {body[:300]}')
+        data=json.loads(body)
+        if not data.get('access_token') or not data.get('refresh_token'): raise RuntimeError('login response did not contain both tokens')
+except urllib.error.HTTPError as e:
+    body=e.read().decode('utf-8','replace')
+    print(f'HTTP {e.code}: {body[:300]}',file=sys.stderr); raise SystemExit(2)
+except Exception as e:
+    print(str(e),file=sys.stderr); raise SystemExit(3)
 PY
 }
 
 change_password(){
-  [[ -x "$INSTALL_DIR/.venv/bin/python" ]] || fail "Pars2Ray Python environment not found"
-  [[ -r "$INSTALL_DIR/master/app/core/security.py" ]] || fail "Pars2Ray application source is incomplete"
-  load_runtime_env
-
-  local user="${PARS2RAY_ADMIN_USER:-${ADMIN_USER:-}}" password confirm
+  load_env
+  local user="${ADMIN_USER:-}" password confirm
   [[ -n "$user" ]] || fail "ADMIN_USER is not configured"
   if [[ -n "${PARS2RAY_NEW_PASSWORD:-}" ]]; then
     password="$PARS2RAY_NEW_PASSWORD"
   else
     while :; do
-      read -r -s -p "New Pars2Ray panel password for ${user} (12+ chars): " password || true
-      printf '\n'
+      read -r -s -p "New Pars2Ray panel password for ${user} (12+ chars): " password || true; printf '\n'
       (( ${#password} >= 12 )) || { echo "[pars2ray] Password must be at least 12 characters." >&2; continue; }
-      read -r -s -p "Confirm new password: " confirm || true
-      printf '\n'
+      read -r -s -p "Confirm new password: " confirm || true; printf '\n'
       [[ "$password" == "$confirm" ]] || { echo "[pars2ray] Passwords do not match." >&2; continue; }
       break
     done
   fi
   (( ${#password} >= 12 )) || fail "Password must be at least 12 characters"
 
-  echo "[pars2ray] Updating the panel password in the live service database..."
-  if ! PARS2RAY_NEW_PASSWORD="$password" PARS2RAY_TARGET_USER="$user" PYTHONPATH="$INSTALL_DIR/master" "$INSTALL_DIR/.venv/bin/python" - <<'PY'
+  local old_password="${ADMIN_PASSWORD:-}"
+  [[ -n "$old_password" ]] || fail "ADMIN_PASSWORD is not configured"
+
+  echo "[pars2ray] Updating the panel password..."
+  PARS2RAY_TARGET_USER="$user" PARS2RAY_NEW_PASSWORD="$password" PYTHONPATH="$INSTALL_DIR/master" "$(runtime_python)" - <<'PY'
 import os
-from datetime import datetime, timezone
 from sqlalchemy import select
 from app.core.security import hash_password, verify_password
 from app.db.base import SessionLocal
-from app.models.entities import RefreshToken, User
-
-username = os.environ["PARS2RAY_TARGET_USER"]
-password = os.environ["PARS2RAY_NEW_PASSWORD"]
-print("[pars2ray] Database URL fingerprint: " + __import__('hashlib').sha256(os.environ.get("DATABASE_URL", "").encode()).hexdigest()[:12])
-db = SessionLocal()
+from app.models.entities import User
+u=os.environ['PARS2RAY_TARGET_USER']; p=os.environ['PARS2RAY_NEW_PASSWORD']
+db=SessionLocal()
 try:
-    user = db.scalar(select(User).where(User.username == username))
-    if user is None:
-        raise RuntimeError(f"User not found in the runtime database: {username}")
-    new_hash = hash_password(password)
-    if not verify_password(password, new_hash):
-        raise RuntimeError("Password hash self-verification failed")
-    user.password_hash = new_hash
-    for token in db.scalars(select(RefreshToken).where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))).all():
-        token.revoked_at = datetime.now(timezone.utc)
+    user=db.scalar(select(User).where(User.username==u))
+    if user is None: raise RuntimeError(f'user not found: {u}')
+    h=hash_password(p)
+    if not verify_password(p,h): raise RuntimeError('new hash self-verification failed')
+    user.password_hash=h
+    user.is_active=True
     db.commit()
     db.expire_all()
-    persisted = db.scalar(select(User).where(User.username == username))
-    if persisted is None or not verify_password(password, persisted.password_hash):
-        raise RuntimeError("Persisted password hash verification failed")
-except Exception:
-    db.rollback()
-    raise
+    check=db.scalar(select(User).where(User.username==u))
+    if check is None or not verify_password(p,check.password_hash): raise RuntimeError('database verification failed after commit')
 finally:
     db.close()
 PY
-  then
-    fail "Database password update failed"
-  fi
 
   local tmp="${ENV_FILE}.tmp.$$"
   awk -v v="$password" 'BEGIN{done=0} /^ADMIN_PASSWORD=/{if(!done){print "ADMIN_PASSWORD=" v;done=1};next} {print} END{if(!done)print "ADMIN_PASSWORD=" v}' "$ENV_FILE" > "$tmp"
-  chmod 0600 "$tmp"
-  mv -f "$tmp" "$ENV_FILE"
+  chmod 0600 "$tmp"; mv -f "$tmp" "$ENV_FILE"
 
   if [[ -f "$CREDENTIALS_FILE" ]]; then
-    local panel_line host port
-    panel_line="$(grep '^Panel: ' "$CREDENTIALS_FILE" || true)"
-    host="$(printf '%s\n' "$panel_line" | sed -n 's#^Panel: http://\([^:]*\):.*#\1#p')"
-    port="$(printf '%s\n' "$panel_line" | sed -n 's#^Panel: .*:\([0-9][0-9]*\)$#\1#p')"
-    host="${host:-localhost}"
-    port="${port:-${PANEL_HTTP_PORT:-8000}}"
+    local panel host port
+    panel="$(grep '^Panel: ' "$CREDENTIALS_FILE" || true)"
+    host="$(printf '%s\n' "$panel" | sed -n 's#^Panel: http://\([^:]*\):.*#\1#p')"
+    port="$(printf '%s\n' "$panel" | sed -n 's#^Panel: .*:\([0-9][0-9]*\)$#\1#p')"
     cat > "$CREDENTIALS_FILE" <<EOF
 Pars2Ray installation
 =====================
-Panel: http://${host}:${port}
+Panel: http://${host:-localhost}:${port:-${PANEL_HTTP_PORT:-8000}}
 Username: ${user}
 Password: ${password}
 
@@ -148,91 +123,94 @@ EOF
     chmod 0600 "$CREDENTIALS_FILE"
   fi
 
-  systemctl_cmd restart pars2ray-master.service pars2ray-worker.service
-  echo "[pars2ray] Verifying the new password against the live panel API..."
-  if ! verify_live_login "$user" "$password"; then
-    echo "[pars2ray] ERROR: The running panel rejected the new credentials." >&2
-    echo "[pars2ray] The CLI used the same runtime DATABASE_URL as the master service." >&2
-    echo "[pars2ray] Check: pars2ray diagnose-auth" >&2
-    exit 1
+  restart_services
+  if ! wait_health; then
+    fail "Panel did not become healthy after password change"
   fi
-  echo "[pars2ray] Panel password changed successfully and live login verification passed."
+  if ! verify_live_login "$user" "$password"; then
+    echo "[pars2ray] Live panel rejected the new password; restoring the previous password..." >&2
+    PARS2RAY_TARGET_USER="$user" PARS2RAY_NEW_PASSWORD="$old_password" PYTHONPATH="$INSTALL_DIR/master" "$(runtime_python)" - <<'PY'
+import os
+from sqlalchemy import select
+from app.core.security import hash_password
+from app.db.base import SessionLocal
+from app.models.entities import User
+u=os.environ['PARS2RAY_TARGET_USER']; p=os.environ['PARS2RAY_NEW_PASSWORD']
+db=SessionLocal()
+try:
+    user=db.scalar(select(User).where(User.username==u))
+    if user is not None:
+        user.password_hash=hash_password(p); db.commit()
+finally: db.close()
+PY
+    local tmp2="${ENV_FILE}.tmp.$$"
+    awk -v v="$old_password" 'BEGIN{done=0} /^ADMIN_PASSWORD=/{if(!done){print "ADMIN_PASSWORD=" v;done=1};next} {print} END{if(!done)print "ADMIN_PASSWORD=" v}' "$ENV_FILE" > "$tmp2"
+    chmod 0600 "$tmp2"; mv -f "$tmp2" "$ENV_FILE"
+    restart_services || true
+    fail "Live panel rejected the new password; change was rolled back"
+  fi
+  echo "[pars2ray] Password changed successfully. Live login verification passed."
 }
 
 diagnose_auth(){
-  load_runtime_env
+  load_env
   local user="${ADMIN_USER:-}" port="${PANEL_HTTP_PORT:-8000}"
   [[ -n "$user" ]] || fail "ADMIN_USER is not configured"
-  echo "[pars2ray] Runtime diagnostics (no passwords are printed)"
+  echo "[pars2ray] Authentication diagnostics"
   echo "  user: $user"
-  echo "  database fingerprint: $(printf '%s' "${DATABASE_URL:-}" | sha256sum | cut -c1-12)"
-  echo "  panel: http://127.0.0.1:${port}"
+  echo "  database: $(printf '%s' "${DATABASE_URL:-}" | sha256sum | cut -c1-12)"
   echo "  master: $(systemctl is-active pars2ray-master.service 2>/dev/null || true)"
-  PYTHONPATH="$INSTALL_DIR/master" "$INSTALL_DIR/.venv/bin/python" - <<'PY'
+  echo "  panel: http://127.0.0.1:${port}"
+  PYTHONPATH="$INSTALL_DIR/master" "$(runtime_python)" - <<'PY'
 from sqlalchemy import select
+from app.core.config import settings
 from app.db.base import SessionLocal
 from app.models.entities import User
-from app.core.config import settings
-print(f"  python database fingerprint: {__import__('hashlib').sha256(settings.database_url.encode()).hexdigest()[:12]}")
+import hashlib
+print('  python database:',hashlib.sha256(settings.database_url.encode()).hexdigest()[:12])
 db=SessionLocal()
 try:
-    rows=db.scalars(select(User)).all()
-    print("  users: " + ", ".join(f"{u.username} (active={u.is_active})" for u in rows) if rows else "  users: NONE")
+    for u in db.scalars(select(User)).all(): print(f'  db user: {u.username} active={u.is_active} hash_prefix={u.password_hash[:12]}')
 finally: db.close()
 PY
 }
 
+update(){
+  [[ -x "$INSTALL_DIR/deploy/install.sh" ]] || fail "Installer not found: $INSTALL_DIR/deploy/install.sh"
+  echo "[pars2ray] Running the full native installer/update..."
+  exec bash "$INSTALL_DIR/deploy/install.sh"
+}
+
 case "${1:-help}" in
-  install|reinstall) exec bash "$INSTALL_DIR/deploy/install.sh" ;;
-  update)
-    git -C "$INSTALL_DIR" fetch --depth 1 origin main || fail "Could not fetch latest Pars2Ray source"
-    git -C "$INSTALL_DIR" reset --hard origin/main || fail "Could not update Pars2Ray source"
-    install -m 0755 "$INSTALL_DIR/deploy/pars2ray" /usr/local/bin/pars2ray
-    systemctl_cmd daemon-reload
-    systemctl_cmd restart pars2ray-master.service pars2ray-worker.service
-    echo "[pars2ray] Updated successfully."
-    ;;
-  start) systemctl_cmd start pars2ray-master.service pars2ray-worker.service ;;
-  stop) systemctl_cmd stop pars2ray-worker.service pars2ray-master.service ;;
-  restart) systemctl_cmd restart pars2ray-master.service pars2ray-worker.service ;;
-  status|ps) systemctl_cmd --no-pager --full status pars2ray-master.service pars2ray-worker.service ;;
+  update) update ;;
+  change-password|password) change_password ;;
+  diagnose-auth) diagnose_auth ;;
+  start) systemctl start pars2ray-master.service pars2ray-worker.service ;;
+  stop) systemctl stop pars2ray-worker.service pars2ray-master.service ;;
+  restart) restart_services ;;
+  status|ps) systemctl --no-pager --full status pars2ray-master.service pars2ray-worker.service ;;
   logs) journalctl -u pars2ray-master.service -u pars2ray-worker.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}" ;;
   master-logs) journalctl -u pars2ray-master.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}" ;;
   worker-logs) journalctl -u pars2ray-worker.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}" ;;
-  change-password|password) change_password ;;
-  diagnose-auth) diagnose_auth ;;
+  config) load_env; sed -E 's/^(ADMIN_PASSWORD|JWT_SECRET|MASTER_SECRET)=.*/\1=***REDACTED***/' "$ENV_FILE" ;;
+  install|reinstall) exec bash "$INSTALL_DIR/deploy/install.sh" ;;
   shell) exec bash ;;
-  config) [[ -r "$ENV_FILE" ]] || fail "Environment file not found: $ENV_FILE"; sed -E 's/^(ADMIN_PASSWORD|JWT_SECRET|MASTER_SECRET)=.*/\1=***REDACTED***/' "$ENV_FILE" ;;
-  uninstall)
-    read -r -p "Remove Pars2Ray services and data? [y/N] " answer
-    [[ "$answer" =~ ^[Yy]$ ]] || exit 0
-    systemctl_cmd disable --now pars2ray-worker.service pars2ray-master.service 2>/dev/null || true
-    rm -f /etc/systemd/system/pars2ray-master.service /etc/systemd/system/pars2ray-worker.service /usr/local/bin/pars2ray
-    systemctl_cmd daemon-reload
-    echo "[pars2ray] Services removed. The project files remain in $INSTALL_DIR."
-    ;;
-  help|-h|--help)
-    cat <<'EOF'
+  uninstall) systemctl disable --now pars2ray-worker.service pars2ray-master.service 2>/dev/null || true; rm -f /etc/systemd/system/pars2ray-master.service /etc/systemd/system/pars2ray-worker.service "$CLI_PATH"; systemctl daemon-reload; echo "[pars2ray] Services removed; project files remain in $INSTALL_DIR." ;;
+  help|-h|--help) cat <<'EOF'
 Pars2Ray management CLI
 
-Usage: pars2ray <command>
-
-  install            Run the native installer
-  update             Pull latest main, refresh the CLI, and restart services
-  start              Start Pars2Ray services
-  stop               Stop Pars2Ray services
-  restart            Restart Pars2Ray services
-  status             Show native service status
-  logs               Show master + worker logs
+  update             Run the complete native installer/update
+  change-password    Change panel password and verify live login
+  password           Alias for change-password
+  diagnose-auth      Show safe authentication/database diagnostics
+  start|stop|restart Manage Pars2Ray services
+  status             Show service status
+  logs               Show master and worker logs
   master-logs        Show master logs
   worker-logs        Show worker logs
-  change-password    Change the panel login password from SSH
-  password           Alias for change-password
-  diagnose-auth      Diagnose runtime/database authentication alignment
-  config             Show runtime configuration with secrets redacted
-  shell              Open a root shell
-  uninstall          Remove Pars2Ray services (keeps project files)
-  help               Show this help
+  config             Show config with secrets redacted
+  install            Run installer
+  uninstall          Remove services (keeps project files)
 EOF
     ;;
   *) fail "Unknown command '$1'. Run 'pars2ray help'." ;;
