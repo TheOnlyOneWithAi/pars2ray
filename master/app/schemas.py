@@ -34,6 +34,7 @@ class UserCreate(BaseModel):
     is_active: bool = True
     plan_id: int | None = Field(default=None, ge=1)
     node_keys: list[str] = Field(default_factory=list, max_length=20)
+    inbound_ids: list[int] = Field(default_factory=list, max_length=32)
     quota_gb: float = Field(default=0, ge=0)
     duration_days: int = Field(default=0, ge=0, le=36500)
     expires_at: datetime | None = None
