@@ -63,6 +63,40 @@ def test_installer_upgrade_preserves_existing_credentials() -> None:
     assert 'git -C "$INSTALL_DIR" reset --hard "origin/$REF"' in installer
 
 
+def test_installer_services_are_least_privilege_and_hardened() -> None:
+    installer = (ROOT / "deploy/install.sh").read_text(encoding="utf-8")
+    assert 'SERVICE_USER="pars2ray"' in installer
+    assert "User=$SERVICE_USER" in installer
+    assert "ProtectSystem=strict" in installer
+    assert "ProtectKernelTunables=true" in installer
+    assert "ProtectKernelModules=true" in installer
+    assert "ProtectControlGroups=true" in installer
+    assert "PrivateDevices=true" in installer
+    assert "CapabilityBoundingSet=" in installer
+    assert "AmbientCapabilities=" in installer
+    assert "RestrictSUIDSGID=true" in installer
+    assert "RestrictRealtime=true" in installer
+    assert "UMask=0077" in installer
+    assert "--host 127.0.0.1" in installer
+
+
+def test_nginx_proxy_has_baseline_security_headers() -> None:
+    installer = (ROOT / "deploy/install.sh").read_text(encoding="utf-8")
+    assert "server_tokens off;" in installer
+    assert 'X-Content-Type-Options "nosniff"' in installer
+    assert 'X-Frame-Options "DENY"' in installer
+    assert 'Referrer-Policy "no-referrer"' in installer
+    assert 'Permissions-Policy "camera=(), microphone=(), geolocation=()"' in installer
+
+
+def test_production_config_rejects_dev_secrets() -> None:
+    source = (ROOT / "master/app/core/config.py").read_text(encoding="utf-8")
+    assert "jwt_secret must be explicitly configured in production" in source
+    assert "master_secret must be explicitly configured in production" in source
+    assert "admin_password must be explicitly configured in production" in source
+    assert "wildcard CORS is not allowed in production" in source
+
+
 def test_migration_configuration_is_present() -> None:
     assert (ROOT / "alembic.ini").is_file()
     assert (ROOT / "migrations" / "env.py").is_file()
