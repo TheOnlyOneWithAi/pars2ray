@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import request_ip, require_roles
-from app.api.subscription_server import _public_subscription_base
+from app.api.subscription_server import _public_subscription_base, _subscription_path
 from app.core.security import encrypt_secret, hash_password, random_token, token_hash, utcnow
 from app.db.base import get_db
 from app.models.entities import Node, Plan, Role, Subscription, User
@@ -21,14 +21,7 @@ router = APIRouter(prefix="/api/v1", tags=["users"])
 
 
 @router.post("/users", tags=["users"])
-def create_user_with_subscription(
-    payload: UserCreate,
-    request: Request,
-    quota_gb: float | None = Query(default=None, ge=0),
-    duration_days: int | None = Query(default=None, ge=0, le=36500),
-    db: Session = Depends(get_db),
-    actor: User = Depends(require_roles("SUPER_ADMIN", "ADMIN")),
-) -> dict:
+def create_user_with_subscription(payload: UserCreate, request: Request, quota_gb: float | None = Query(default=None, ge=0), duration_days: int | None = Query(default=None, ge=0, le=36500), db: Session = Depends(get_db), actor: User = Depends(require_roles("SUPER_ADMIN", "ADMIN"))) -> dict:
     if db.scalar(select(User).where(User.username == payload.username)):
         raise HTTPException(status_code=409, detail="username_exists")
     if payload.email and db.scalar(select(User.id).where(User.email == payload.email)):
@@ -70,63 +63,21 @@ def create_user_with_subscription(
         raise HTTPException(status_code=422, detail="expires_at_must_be_future")
 
     generated_password = random_token(32)
-    user = User(
-        username=payload.username,
-        email=payload.email,
-        password_hash=hash_password(payload.password or generated_password),
-        is_active=payload.is_active,
-        quota_gb=effective_quota,
-        used_gb=0,
-        expires_at=expires_at,
-        roles=[role_row],
-    )
+    user = User(username=payload.username, email=payload.email, password_hash=hash_password(payload.password or generated_password), is_active=payload.is_active, quota_gb=effective_quota, used_gb=0, expires_at=expires_at, roles=[role_row])
     db.add(user)
     db.flush()
 
     raw_token = random_token(48)
     subscription_config = json.dumps({"inbound_ids": inbound_ids}, separators=(",", ":"))
-    subscription = Subscription(
-        user_id=user.id,
-        plan_id=plan.id if plan else None,
-        token_hash=token_hash(raw_token),
-        token_enc=encrypt_secret(raw_token),
-        config_enc=encrypt_secret(subscription_config),
-        node_keys=node_keys,
-        enabled=True,
-        used_gb=0,
-        expires_at=expires_at,
-    )
+    subscription = Subscription(user_id=user.id, plan_id=plan.id if plan else None, token_hash=token_hash(raw_token), token_enc=encrypt_secret(raw_token), config_enc=encrypt_secret(subscription_config), node_keys=node_keys, enabled=True, used_gb=0, expires_at=expires_at)
     db.add(subscription)
     db.flush()
 
-    record(db, actor, "user.create", "user", str(user.id), request_ip(request), {
-        "role": payload.role,
-        "plan_id": plan.id if plan else None,
-        "quota_gb": effective_quota,
-        "duration_days": effective_duration,
-        "unlimited_quota": effective_quota == 0,
-        "unlimited_time": expires_at is None,
-        "node_count": len(node_keys),
-        "inbound_count": len(inbound_ids),
-    })
+    record(db, actor, "user.create", "user", str(user.id), request_ip(request), {"role": payload.role, "plan_id": plan.id if plan else None, "quota_gb": effective_quota, "duration_days": effective_duration, "unlimited_quota": effective_quota == 0, "unlimited_time": expires_at is None, "node_count": len(node_keys), "inbound_count": len(inbound_ids)})
     db.commit()
     db.refresh(user)
 
-    subscription_url = f"{_public_subscription_base(request, db)}{quote(payload.username, safe='')}"
-    return {
-        "id": user.id,
-        "username": user.username,
-        "email": user.email,
-        "role": user.role,
-        "is_active": user.is_active,
-        "created_at": user.created_at,
-        "last_login_at": user.last_login_at,
-        "plan_id": plan.id if plan else None,
-        "quota_gb": float(user.quota_gb),
-        "used_gb": float(user.used_gb),
-        "expires_at": user.expires_at,
-        "subscription_url": subscription_url,
-        "raw_subscription_url": f"{subscription_url}/raw",
-        "inbound_required": False,
-        "inbound_count": len(inbound_ids),
-    }
+    base = _public_subscription_base(request, db)
+    origin = base.split(_subscription_path(db), 1)[0]
+    subscription_url = f"{origin}/s/{quote(raw_token, safe='')}"
+    return {"id": user.id, "username": user.username, "email": user.email, "role": user.role, "is_active": user.is_active, "created_at": user.created_at, "last_login_at": user.last_login_at, "plan_id": plan.id if plan else None, "quota_gb": float(user.quota_gb), "used_gb": float(user.used_gb), "expires_at": user.expires_at, "subscription_url": subscription_url, "raw_subscription_url": f"{subscription_url}/raw", "inbound_required": False, "inbound_count": len(inbound_ids)}
