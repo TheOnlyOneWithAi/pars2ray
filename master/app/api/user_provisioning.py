@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -13,6 +14,7 @@ from app.db.base import get_db
 from app.models.entities import Node, Plan, Role, Subscription, User
 from app.schemas import UserCreate
 from app.services.audit import record
+from app.services.inbound_store import ensure_tables, list_inbounds
 
 router = APIRouter(prefix="/api/v1", tags=["users"])
 
@@ -37,7 +39,19 @@ def create_user_with_subscription(
     if payload.plan_id is not None and (not plan or not plan.enabled):
         raise HTTPException(status_code=404, detail="plan_not_found")
 
+    inbound_ids = list(dict.fromkeys(int(item) for item in payload.inbound_ids))
+    available: dict[int, dict] = {}
+    if inbound_ids:
+        ensure_tables(db.get_bind())
+        available = {int(row["id"]): row for row in list_inbounds(db)}
+        missing = sorted(set(inbound_ids) - set(available))
+        if missing:
+            raise HTTPException(status_code=422, detail={"code": "unknown_inbounds", "inbounds": missing})
+
     node_keys = list(dict.fromkeys(key.strip().upper() for key in payload.node_keys if key.strip()))
+    if inbound_ids:
+        inbound_nodes = {str(available[item]["node_key"]).strip().upper() for item in inbound_ids}
+        node_keys = list(dict.fromkeys(node_keys + sorted(inbound_nodes)))
     if len(node_keys) > 20:
         raise HTTPException(status_code=422, detail="too_many_nodes")
     if node_keys:
@@ -54,9 +68,6 @@ def create_user_with_subscription(
     if expires_at is not None and expires_at <= utcnow():
         raise HTTPException(status_code=422, detail="expires_at_must_be_future")
 
-    # Panel authentication credentials remain optional. A random password is stored
-    # only when the caller does not provide one, so subscription/config creation never
-    # depends on an email or a user-supplied password.
     generated_password = random_token(32)
     user = User(
         username=payload.username,
@@ -72,11 +83,13 @@ def create_user_with_subscription(
     db.flush()
 
     raw_token = random_token(48)
+    subscription_config = json.dumps({"inbound_ids": inbound_ids}, separators=(",", ":"))
     subscription = Subscription(
         user_id=user.id,
         plan_id=plan.id if plan else None,
         token_hash=token_hash(raw_token),
         token_enc=encrypt_secret(raw_token),
+        config_enc=encrypt_secret(subscription_config),
         node_keys=node_keys,
         enabled=True,
         used_gb=0,
@@ -93,11 +106,12 @@ def create_user_with_subscription(
         "unlimited_quota": effective_quota == 0,
         "unlimited_time": expires_at is None,
         "node_count": len(node_keys),
+        "inbound_count": len(inbound_ids),
     })
     db.commit()
     db.refresh(user)
 
-    subscription_url = f"{_public_subscription_base(request, db)}{raw_token}"
+    subscription_url = f"{_public_subscription_base(request, db)}{quote(payload.username, safe='')}"
     return {
         "id": user.id,
         "username": user.username,
@@ -113,5 +127,5 @@ def create_user_with_subscription(
         "subscription_url": subscription_url,
         "raw_subscription_url": f"{subscription_url}/raw",
         "inbound_required": False,
-        "inbound_count": len(node_keys),
+        "inbound_count": len(inbound_ids),
     }
