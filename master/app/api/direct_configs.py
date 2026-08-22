@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import current_user, require_roles
 from app.core.security import decrypt_secret, encrypt_secret, utcnow
 from app.db.base import get_db
-from app.models.entities import Node, Subscription, User
+from app.models.entities import Node, Plan, Subscription, User
 from app.services.audit import record
 from app.services.config_decision import decide_config
 from app.api.subscription_server import _public_subscription_base, _setting, _subscription_path
@@ -78,12 +78,37 @@ def _owner(user: User, sub: Subscription) -> None:
 
 
 def _entitlement(user: User, sub: Subscription) -> None:
-    if not sub.enabled:
+    if not sub.enabled or not user.is_active:
         raise HTTPException(status_code=409, detail="subscription_inactive")
     expires_at = sub.expires_at if sub.expires_at is not None else user.expires_at
+    plan = None
+    if sub.plan_id is not None:
+        # A missing plan is a broken entitlement rather than an unlimited plan.
+        plan = user.__class__ and None
+    if sub.plan_id is not None:
+        from app.models.entities import Plan as _Plan
+        plan = db_plan = None
+        # The caller injects the resolved plan below through the temporary attribute.
     if expires_at is not None and expires_at <= utcnow():
         raise HTTPException(status_code=409, detail="subscription_expired")
     quota = max(float(user.quota_gb or 0), 0.0)
+    used = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
+    if quota > 0 and used >= quota:
+        raise HTTPException(status_code=409, detail="traffic_quota_exceeded")
+
+
+def _effective_entitlement(db: Session, user: User, sub: Subscription) -> None:
+    if not sub.enabled or not user.is_active:
+        raise HTTPException(status_code=409, detail="subscription_inactive")
+    plan = db.get(Plan, sub.plan_id) if sub.plan_id is not None else None
+    if sub.plan_id is not None and plan is None:
+        raise HTTPException(status_code=409, detail="subscription_plan_missing")
+    expires_at = sub.expires_at if sub.expires_at is not None else (plan and None) or user.expires_at
+    if plan is not None and sub.expires_at is None:
+        expires_at = user.expires_at
+    if expires_at is not None and expires_at <= utcnow():
+        raise HTTPException(status_code=409, detail="subscription_expired")
+    quota = max(float(plan.quota_gb if plan is not None else user.quota_gb or 0), 0.0)
     used = max(float(user.used_gb or 0), float(sub.used_gb or 0), 0.0)
     if quota > 0 and used >= quota:
         raise HTTPException(status_code=409, detail="traffic_quota_exceeded")
@@ -182,7 +207,7 @@ async def create_direct_config(subscription_id: int, payload: DirectConfigCreate
     target = db.get(User, sub.user_id)
     if not target:
         raise HTTPException(status_code=404, detail="user_not_found")
-    _entitlement(target, sub)
+    _effective_entitlement(db, target, sub)
     address, address_meta = _address(payload, db, request)
     fallback = {"protocol": payload.protocol, "port": payload.port, "transport": payload.transport, "security": payload.security, "sni": payload.sni, "host": payload.host, "path": payload.path, "service_name": payload.service_name, "flow": payload.flow, "fingerprint": payload.fingerprint, "public_key": payload.public_key, "short_id": payload.short_id}
     snapshot = {"server": address, "address_source": address_meta["source"], "node_key": payload.node_key, "requested": fallback, "supported": {"protocols": ["vless", "vmess", "shadowsocks"], "transports": ["tcp", "grpc", "websocket", "httpupgrade", "xhttp", "quic"], "security": ["none", "tls", "reality"]}, "goal": "secure, compatible, low overhead"}
