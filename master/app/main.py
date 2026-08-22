@@ -15,6 +15,7 @@ from app.api.routes import router
 from app.api.protocols import public_router, router as protocols_router
 from app.api.ai_settings import router as ai_settings_router
 from app.api.node_management import router as node_management_router
+from app.api.xray_management import router as xray_management_router
 from app.core.config import settings
 from app.db.base import SessionLocal
 from app.services.auth import ensure_seed
@@ -78,6 +79,7 @@ app.include_router(router)
 app.include_router(protocols_router)
 app.include_router(public_router)
 app.include_router(node_management_router)
+app.include_router(xray_management_router)
 
 STATIC = Path(__file__).parent / "static"
 if STATIC.exists():
