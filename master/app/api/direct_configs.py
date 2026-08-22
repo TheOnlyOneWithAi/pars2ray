@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import secrets
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -12,11 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, require_roles
-from app.api.subscription_server import _public_subscription_base
+from app.api.subscription_server import _public_subscription_base, _setting
 from app.core.security import decrypt_secret, encrypt_secret, utcnow
 from app.db.base import get_db
 from app.models.entities import Node, Subscription, User
 from app.services.audit import record
+from app.services.config_decision import decide_config
 
 router = APIRouter(prefix="/api/v1", tags=["direct-configs"])
 
@@ -76,51 +77,82 @@ def _owner(user: User, sub: Subscription) -> None:
         raise HTTPException(status_code=403, detail="forbidden")
 
 
-def _address(payload: DirectConfigCreate, db: Session) -> str:
+def _endpoint_host(endpoint: str) -> str:
+    value = endpoint.strip()
+    if not value:
+        return ""
+    parsed = urlsplit(value if "://" in value else f"//{value}")
+    return parsed.hostname or ""
+
+
+def _address(payload: DirectConfigCreate, db: Session, request: Request) -> tuple[str, dict]:
     if payload.address:
-        return payload.address.strip()
+        return payload.address.strip(), {"source": "explicit"}
     if payload.node_key:
         node = db.scalar(select(Node).where(Node.node_key == payload.node_key.upper()))
         if not node:
             raise HTTPException(status_code=404, detail="node_not_found")
-        return node.endpoint.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0]
-    raise HTTPException(status_code=422, detail="address_or_node_required")
+        host = _endpoint_host(node.endpoint or "")
+        if host:
+            return host, {"source": "node", "node_key": payload.node_key.upper()}
+    for key in ("server.public_ip", "subscription.domain", "panel.domain"):
+        value = _setting(db, key)
+        if value:
+            host = _endpoint_host(value)
+            if host:
+                return host, {"source": key}
+    host = request.headers.get("host") or request.url.hostname or ""
+    host = _endpoint_host(host)
+    if host:
+        return host, {"source": "request_host"}
+    raise HTTPException(status_code=422, detail="server_address_unavailable")
 
 
-def _build(payload: DirectConfigCreate, db: Session) -> tuple[str, dict]:
-    address = _address(payload, db)
+def _build(payload: DirectConfigCreate, db: Session, request: Request, decision: dict | None = None) -> tuple[str, dict]:
+    address, address_meta = _address(payload, db, request)
+    selected = {
+        "protocol": payload.protocol, "port": payload.port, "transport": payload.transport,
+        "security": payload.security, "sni": payload.sni, "host": payload.host,
+        "path": payload.path, "service_name": payload.service_name, "flow": payload.flow,
+        "fingerprint": payload.fingerprint, "public_key": payload.public_key, "short_id": payload.short_id,
+    }
+    if decision:
+        selected.update({k: v for k, v in decision.items() if v is not None})
     uid = payload.uuid or str(uuid4())
     name = quote(payload.name, safe="")
-    query: dict[str, str] = {"type": payload.transport, "security": payload.security}
-    if payload.security in {"tls", "reality"} and payload.sni:
-        query["sni"] = payload.sni
-    if payload.security == "reality":
-        if payload.fingerprint:
-            query["fp"] = payload.fingerprint
-        if payload.public_key:
-            query["pbk"] = payload.public_key
-        if payload.short_id:
-            query["sid"] = payload.short_id
-    if payload.flow:
-        query["flow"] = payload.flow
-    if payload.transport in {"websocket", "httpupgrade", "xhttp"}:
-        query["path"] = payload.path
-        if payload.host:
-            query["host"] = payload.host
-    if payload.transport == "grpc" and payload.service_name:
-        query["serviceName"] = payload.service_name
+    query: dict[str, str] = {"type": selected["transport"], "security": selected["security"]}
+    if selected["security"] in {"tls", "reality"} and selected.get("sni"):
+        query["sni"] = str(selected["sni"])
+    if selected["security"] == "reality":
+        if selected.get("fingerprint"):
+            query["fp"] = str(selected["fingerprint"])
+        if selected.get("public_key"):
+            query["pbk"] = str(selected["public_key"])
+        if selected.get("short_id"):
+            query["sid"] = str(selected["short_id"])
+    if selected.get("flow"):
+        query["flow"] = str(selected["flow"])
+    if selected["transport"] in {"websocket", "httpupgrade", "xhttp"}:
+        query["path"] = str(selected.get("path") or "/")
+        if selected.get("host"):
+            query["host"] = str(selected["host"])
+    if selected["transport"] == "grpc" and selected.get("service_name"):
+        query["serviceName"] = str(selected["service_name"])
     query_text = "&".join(f"{quote(k)}={quote(str(v))}" for k, v in query.items())
-    if payload.protocol == "vless":
-        link = f"vless://{uid}@{address}:{payload.port}?{query_text}#{name}"
-    elif payload.protocol == "vmess":
-        obj = {"v": "2", "ps": payload.name, "add": address, "port": str(payload.port), "id": uid, "aid": payload.alter_id, "scy": "auto", "net": payload.transport, "type": "none", "host": payload.host or "", "path": payload.path, "tls": "tls" if payload.security == "tls" else "", "sni": payload.sni or ""}
+    protocol = selected["protocol"]
+    port = int(selected["port"])
+    if protocol == "vless":
+        link = f"vless://{uid}@{address}:{port}?{query_text}#{name}"
+    elif protocol == "vmess":
+        obj = {"v": "2", "ps": payload.name, "add": address, "port": str(port), "id": uid, "aid": payload.alter_id, "scy": "auto", "net": selected["transport"], "type": "none", "host": selected.get("host") or "", "path": selected.get("path") or "/", "tls": "tls" if selected["security"] == "tls" else "", "sni": selected.get("sni") or ""}
         link = "vmess://" + base64.b64encode(json.dumps(obj, separators=(",", ":")).encode()).decode()
     else:
         method = payload.method or "aes-128-gcm"
         secret = payload.password or secrets.token_urlsafe(18)
         userinfo = base64.urlsafe_b64encode(f"{method}:{secret}".encode()).decode().rstrip("=")
-        link = f"ss://{userinfo}@{address}:{payload.port}#{name}"
-    return link, {"id": str(uuid4()), "name": payload.name, "protocol": payload.protocol, "link": link, "address": address, "port": payload.port, "node_key": payload.node_key.upper() if payload.node_key else None, "enabled": True, "created_at": utcnow().isoformat()}
+        link = f"ss://{userinfo}@{address}:{port}#{name}"
+    row = {"id": str(uuid4()), "name": payload.name, "protocol": protocol, "link": link, "address": address, "port": port, "node_key": payload.node_key.upper() if payload.node_key else None, "enabled": True, "created_at": utcnow().isoformat(), "decision": selected, "address_source": address_meta["source"]}
+    return link, row
 
 
 @router.get("/subscriptions/{subscription_id}/direct-configs")
@@ -133,7 +165,7 @@ def list_direct_configs(subscription_id: int, db: Session = Depends(get_db), use
 
 
 @router.post("/subscriptions/{subscription_id}/direct-configs", status_code=201)
-def create_direct_config(subscription_id: int, payload: DirectConfigCreate, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER", "USER"))) -> dict:
+async def create_direct_config(subscription_id: int, payload: DirectConfigCreate, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER", "USER"))) -> dict:
     if payload.subscription_id != subscription_id:
         raise HTTPException(status_code=422, detail="subscription_id_mismatch")
     sub = db.get(Subscription, subscription_id)
@@ -145,17 +177,27 @@ def create_direct_config(subscription_id: int, payload: DirectConfigCreate, requ
     expires_at = sub.expires_at
     if expires_at is not None and expires_at <= utcnow():
         raise HTTPException(status_code=409, detail="subscription_expired")
-    link, row = _build(payload, db)
+
+    address, address_meta = _address(payload, db, request)
+    fallback = {"protocol": payload.protocol, "port": payload.port, "transport": payload.transport, "security": payload.security, "sni": payload.sni, "host": payload.host, "path": payload.path, "service_name": payload.service_name, "flow": payload.flow, "fingerprint": payload.fingerprint, "public_key": payload.public_key, "short_id": payload.short_id}
+    snapshot = {"server": address, "address_source": address_meta["source"], "node_key": payload.node_key, "requested": fallback, "supported": {"protocols": ["vless", "vmess", "shadowsocks"], "transports": ["tcp", "grpc", "websocket", "httpupgrade", "xhttp", "quic"], "security": ["none", "tls", "reality"]}, "goal": "secure, compatible, low overhead"}
+    selected, ai_meta = await decide_config(snapshot, fallback)
+    payload_data = payload.model_dump()
+    for key in fallback:
+        if key in selected:
+            payload_data[key] = selected[key]
+    effective = DirectConfigCreate(**payload_data)
+    link, row = _build(effective, db, request, selected)
     rows = [] if payload.replace else _load(sub)
     rows.append(row)
     if len(rows) > 100:
         raise HTTPException(status_code=422, detail="too_many_direct_configs")
     _save(sub, rows)
-    record(db, user, "subscription.direct_config.create", "subscription", str(sub.id), request.client.host if request.client else "", {"protocol": payload.protocol, "name": payload.name})
+    record(db, user, "subscription.direct_config.create", "subscription", str(sub.id), request.client.host if request.client else "", {"protocol": effective.protocol, "name": effective.name, "ai_enabled": bool(ai_meta.get("enabled")), "address_source": row["address_source"]})
     db.commit()
     base = _public_subscription_base(request, db)
     subscription_url = f"{base}{quote(user.username, safe='')}"
-    return {"ok": True, "config": row, "link": link, "subscription_url": subscription_url, "raw_url": f"{subscription_url}/raw", "inbound_required": False, "credential_source": "protocol_generated"}
+    return {"ok": True, "config": row, "link": link, "subscription_url": subscription_url, "raw_url": f"{subscription_url}/raw", "inbound_required": False, "credential_source": "protocol_generated", "ai": ai_meta}
 
 
 @router.patch("/subscriptions/{subscription_id}/direct-configs/{config_id}")
