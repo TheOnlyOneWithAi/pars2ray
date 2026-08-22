@@ -288,3 +288,24 @@ class ApiKeyCreate(BaseModel):
 
 class ApiKeyOut(ORMModel):
     id: int
+    name: str
+    key_prefix: str
+    scopes: list[str]
+    last_used_at: datetime | None
+    expires_at: datetime | None
+    revoked_at: datetime | None
+    created_at: datetime
+
+
+class PlanCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    quota_gb: float = Field(ge=0)
+    duration_days: int = Field(ge=1, le=3650)
+    max_devices: int = Field(ge=1, le=100)
+    price_minor: int = Field(ge=0)
+
+
+class SubscriptionCreate(BaseModel):
+    user_id: int = Field(gt=0)
+    plan_id: int = Field(gt=0)
+    node_keys: list[str] = Field(default_factory=list, max_length=20)
