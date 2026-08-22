@@ -1,6 +1,30 @@
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
-from app.main import app
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _prepare_database() -> None:
+    env = os.environ.copy()
+    env.setdefault("PYTHONPATH", str(ROOT / "master"))
+    subprocess.run(
+        ["python", "-m", "alembic", "upgrade", "head"],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+_prepare_database()
+
+from app.main import app  # noqa: E402
 
 
 def test_health_and_security_headers() -> None:
