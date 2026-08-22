@@ -12,14 +12,7 @@ from app.services.ssh_provision import _client, _exec, decode_config
 
 
 async def _ssh_request(node, method: str, path: str, json_data=None):
-    """Call the node agent through the already-provisioned SSH channel.
-
-    The agent intentionally listens on the node's private port 9100. Public
-    firewalls/security groups commonly block that port even though SSH is
-    reachable, so HTTP-only control-plane calls made newly provisioned nodes
-    appear as ``node_unreachable``. SSH is the authoritative management path
-    for provisioned nodes and is used here as a transparent fallback.
-    """
+    """Call the node agent through the already-provisioned SSH channel."""
     if not node.ssh_config_enc:
         raise RuntimeError("node_agent_http_and_ssh_unavailable")
 
@@ -64,7 +57,7 @@ async def request(node, method: str, path: str, json_data=None):
             response = await client.request(method, node.endpoint.rstrip("/") + path, headers=headers, json=json_data)
             response.raise_for_status()
             return response.json()
-    except (httpx.HTTPError, OSError, TimeoutError) as http_error:
+    except (httpx.TransportError, OSError, TimeoutError):
         try:
             return await _ssh_request(node, method, path, json_data)
         except Exception as ssh_error:
@@ -92,7 +85,7 @@ async def config(node):
 
 
 async def benchmark(node, payload):
-    return await command(node, "POST", "/command", {"command": "RUN_BENCHMARK", "payload": payload})
+    return await command(node, "RUN_BENCHMARK", payload)
 
 
 async def apply_config(node, payload):
