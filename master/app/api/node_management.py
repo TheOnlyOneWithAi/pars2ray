@@ -6,6 +6,7 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, request_ip, require_roles
@@ -61,8 +62,8 @@ def test_ssh_connection(payload: SSHRequest) -> dict:
 def provision_node(payload: NodeProvisionRequest, request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
     if db.scalar(select(Node).where(Node.node_key == payload.node_key)):
         raise HTTPException(status_code=409, detail="node_key_exists")
-    ssh_config = payload.ssh.to_config()
 
+    ssh_config = payload.ssh.to_config()
     # Endpoint is never user input. The agent is installed over SSH and listens
     # on its fixed local port, so the panel derives the URL from the SSH host.
     endpoint = f"http://{payload.ssh.host}:9100"
@@ -78,13 +79,33 @@ def provision_node(payload: NodeProvisionRequest, request: Request, db: Session 
         agent_version="unknown",
     )
     db.add(node)
-    db.flush()
+    try:
+        # Persist the node before the potentially long SSH operation. The old
+        # flow kept the INSERT uncommitted until provisioning finished, so any
+        # SSH/install failure rolled the node completely out of /api/v1/nodes.
+        db.commit()
+        db.refresh(node)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="node_key_exists") from exc
+
+    node_id = node.id
     try:
         provision_over_ssh(ssh_config, payload.node_key, payload.country, agent_token)
     except Exception as exc:
-        db.rollback()
+        # Keep the node visible and actionable instead of losing it with the
+        # failed transaction. Credentials remain encrypted in the database.
+        failed_node = db.get(Node, node_id)
+        if failed_node is not None:
+            failed_node.status = "FAILED"
+            db.commit()
         raise HTTPException(status_code=502, detail=f"node_provision_failed:{exc}") from exc
+
+    node = db.get(Node, node_id)
+    if node is None:
+        raise HTTPException(status_code=500, detail="node_persistence_lost")
     node.status = "REGISTERED"
+    node.agent_version = "2.3.0"
     record(db, user, "node.provision", "node", str(node.id), request_ip(request))
     db.commit()
     return {"id": node.id, "node_key": node.node_key, "country": node.country, "status": node.status, "agent_version": node.agent_version, "provisioned": True}
