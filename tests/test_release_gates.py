@@ -30,15 +30,18 @@ def test_native_backup_round_trip(tmp_path: Path) -> None:
     etc = tmp_path / "etc"
     etc.mkdir()
     env_file = etc / "pars2ray.env"
-    env_file.write_text(f"DATABASE_URL=sqlite:////{db}\n", encoding="utf-8")
+    database_url = f"sqlite:////{db}"
+    env_file.write_text(f"DATABASE_URL={database_url}\n", encoding="utf-8")
     with sqlite3.connect(db) as conn:
         conn.execute("create table marker (value text not null)")
         conn.execute("insert into marker values ('before-backup')")
         conn.commit()
-    env = os.environ | {
+    env = os.environ.copy()
+    env.pop("DATABASE_URL", None)
+    env.update({
         "PARS2RAY_ETC_DIR": str(etc),
         "PARS2RAY_BACKUP_DIR": str(out),
-    }
+    })
     result = run("bash", "deploy/scripts/native-backup.sh", env=env)
     backup = Path(result.stdout.strip().splitlines()[-1])
     assert backup.exists()
