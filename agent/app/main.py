@@ -91,6 +91,13 @@ def _public_addresses(host: str) -> list[tuple[int, str]]:
     return addresses
 
 
+def _connect_address(family: int, address: str, port: int) -> tuple:
+    """Build the sockaddr expected by IPv4 and IPv6 sockets."""
+    if family == socket.AF_INET6:
+        return (address, port, 0, 0)
+    return (address, port)
+
+
 @app.post("/benchmark/tcp")
 def benchmark(request: BenchmarkRequest, x_agent_token: str | None = Header(default=None)) -> dict:
     authorize(x_agent_token)
@@ -103,7 +110,7 @@ def benchmark(request: BenchmarkRequest, x_agent_token: str | None = Header(defa
         try:
             with socket_module.socket(family, socket.SOCK_STREAM) as sock:
                 sock.settimeout(request.timeout_seconds)
-                sock.connect((address, request.port))
+                sock.connect(_connect_address(family, address, request.port))
             latencies.append((time.perf_counter() - start) * 1000)
         except OSError:
             failures += 1
