@@ -13,7 +13,7 @@ from app.api.subscription_server import _public_subscription_base, _subscription
 from app.core.security import encrypt_secret, hash_password, random_token, token_hash, utcnow
 from app.db.base import get_db
 from app.models.entities import Node, Plan, Role, Subscription, User
-from app.schemas import UserCreate
+from app.schemas import UserCreate, UserUpdate
 from app.services.audit import record
 from app.services.inbound_store import ensure_tables, list_inbounds
 
@@ -81,3 +81,28 @@ def create_user_with_subscription(payload: UserCreate, request: Request, quota_g
     origin = base.split(_subscription_path(db), 1)[0]
     subscription_url = f"{origin}/s/{quote(raw_token, safe='')}"
     return {"id": user.id, "username": user.username, "email": user.email, "role": user.role, "is_active": user.is_active, "created_at": user.created_at, "last_login_at": user.last_login_at, "plan_id": plan.id if plan else None, "quota_gb": float(user.quota_gb), "used_gb": float(user.used_gb), "expires_at": user.expires_at, "subscription_url": subscription_url, "raw_subscription_url": f"{subscription_url}/raw", "inbound_required": False, "inbound_count": len(inbound_ids)}
+
+
+@router.patch("/users/{user_id}/limits", tags=["users"])
+def update_user_limits(user_id: int, payload: UserUpdate, request: Request, db: Session = Depends(get_db), actor: User = Depends(require_roles("SUPER_ADMIN", "ADMIN"))) -> dict:
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="user_not_found")
+    if payload.quota_gb is not None:
+        target.quota_gb = float(payload.quota_gb)
+    if payload.duration_days is not None:
+        target.expires_at = utcnow() + timedelta(days=payload.duration_days) if payload.duration_days > 0 else None
+    elif payload.expires_at is not None:
+        if payload.expires_at <= utcnow():
+            raise HTTPException(status_code=422, detail="expires_at_must_be_future")
+        target.expires_at = payload.expires_at
+
+    # Plan-less subscriptions inherit the user's direct entitlement. Keep their
+    # mirrored expiry synchronized so an old subscription value cannot override it.
+    for sub in db.scalars(select(Subscription).where(Subscription.user_id == target.id, Subscription.plan_id.is_(None), Subscription.enabled.is_(True))).all():
+        sub.expires_at = target.expires_at
+
+    record(db, actor, "user.limits.update", "user", str(target.id), request_ip(request), {"quota_gb": float(target.quota_gb or 0), "expires_at": target.expires_at.isoformat() if target.expires_at else None, "unlimited_quota": float(target.quota_gb or 0) == 0, "unlimited_time": target.expires_at is None})
+    db.commit()
+    db.refresh(target)
+    return {"id": target.id, "username": target.username, "quota_gb": float(target.quota_gb or 0), "used_gb": float(target.used_gb or 0), "expires_at": target.expires_at, "unlimited_quota": float(target.quota_gb or 0) == 0, "unlimited_time": target.expires_at is None}
