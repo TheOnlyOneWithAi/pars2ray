@@ -7,7 +7,7 @@ from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.subscription_server import _all_links, _headers, _public_subscription_base, _subscription_path, subscription
+from app.api.subscription_server import _all_links, _headers, _public_subscription_base, _subscription_path, subscription, subscription_raw
 from app.core.security import token_hash, utcnow
 from app.db.base import get_db
 from app.models.entities import Plan, Subscription, User
@@ -44,9 +44,7 @@ def _secure_url(request: Request, db: Session, token: str) -> str:
 
 def _rewrite_subscription_url(response: Response, old_url: str, new_url: str) -> None:
     body = getattr(response, "body", None)
-    if not body:
-        return
-    if isinstance(body, bytes):
+    if isinstance(body, bytes) and body:
         response.body = body.replace(old_url.encode(), new_url.encode())
         response.headers["content-length"] = str(len(response.body))
 
@@ -68,10 +66,32 @@ def secure_subscription(token: str, request: Request, db: Session = Depends(get_
 @public_router.get("/s/{token}/raw")
 def secure_subscription_raw(token: str, db: Session = Depends(get_db)) -> PlainTextResponse:
     sub, user = _lookup(token, db)
-    body = "\n".join(_all_links(db, sub, user))
-    response = PlainTextResponse(body, headers=_headers(db, user, sub), media_type="text/plain; charset=utf-8")
+    response = PlainTextResponse("\n".join(_all_links(db, sub, user)), headers=_headers(db, user, sub), media_type="text/plain; charset=utf-8")
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@public_router.get("/link/{value}")
+def compatibility_subscription(value: str, request: Request, db: Session = Depends(get_db)) -> Response:
+    try:
+        sub, user = _lookup(value, db)
+    except HTTPException:
+        return subscription(value, request, db)
+    response = subscription(user.username, request, db)
+    _rewrite_subscription_url(response, f"{_public_subscription_base(request, db)}{quote(user.username, safe='')}", _secure_url(request, db, value))
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
+@public_router.get("/link/{value}/raw")
+def compatibility_subscription_raw(value: str, request: Request, db: Session = Depends(get_db)) -> PlainTextResponse:
+    try:
+        sub, user = _lookup(value, db)
+    except HTTPException:
+        return subscription_raw(value, request, db)
+    response = PlainTextResponse("\n".join(_all_links(db, sub, user)), headers=_headers(db, user, sub), media_type="text/plain; charset=utf-8")
+    response.headers["Cache-Control"] = "no-store, max-age=0"
     return response
