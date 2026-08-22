@@ -15,6 +15,7 @@ from app.core.security import decrypt_secret, encrypt_secret, random_token, toke
 from app.db.base import get_db
 from app.models.entities import Node, Subscription, User
 from app.services.audit import record
+from app.api.subscription_server import _public_subscription_base
 
 router = APIRouter(prefix="/api/v1", tags=["direct-configs"])
 
@@ -89,33 +90,33 @@ def _build(payload: DirectConfigCreate, db: Session) -> tuple[str, dict]:
     address = _address(payload, db)
     uid = payload.uuid or str(uuid4())
     name = quote(payload.name, safe="")
-    q: dict[str, str] = {"type": payload.transport, "security": payload.security}
+    query: dict[str, str] = {"type": payload.transport, "security": payload.security}
     if payload.security in {"tls", "reality"} and payload.sni:
-        q["sni"] = payload.sni
+        query["sni"] = payload.sni
     if payload.security == "reality":
         if payload.fingerprint:
-            q["fp"] = payload.fingerprint
+            query["fp"] = payload.fingerprint
         if payload.public_key:
-            q["pbk"] = payload.public_key
+            query["pbk"] = payload.public_key
         if payload.short_id:
-            q["sid"] = payload.short_id
+            query["sid"] = payload.short_id
     if payload.flow:
-        q["flow"] = payload.flow
+        query["flow"] = payload.flow
     if payload.transport in {"websocket", "httpupgrade", "xhttp"}:
-        q["path"] = payload.path
+        query["path"] = payload.path
         if payload.host:
-            q["host"] = payload.host
+            query["host"] = payload.host
     if payload.transport == "grpc" and payload.service_name:
-        q["serviceName"] = payload.service_name
+        query["serviceName"] = payload.service_name
+    query_text = "&".join(f"{quote(k)}={quote(str(v))}" for k, v in query.items())
     if payload.protocol == "vless":
-        query = "&".join(f"{quote(k)}={quote(str(v))}" for k, v in q.items())
-        link = f"vless://{uid}@{address}:{payload.port}?{query}#{name}"
+        link = f"vless://{uid}@{address}:{payload.port}?{query_text}#{name}"
     elif payload.protocol == "vmess":
         obj = {"v": "2", "ps": payload.name, "add": address, "port": str(payload.port), "id": uid, "aid": payload.alter_id, "scy": "auto", "net": payload.transport, "type": "none", "host": payload.host or "", "path": payload.path, "tls": "tls" if payload.security == "tls" else "", "sni": payload.sni or ""}
-        link = "vmess://" + base64.urlsafe_b64encode(json.dumps(obj, separators=(",", ":")).encode()).decode().rstrip("=")
+        link = "vmess://" + base64.b64encode(json.dumps(obj, separators=(",", ":")).encode()).decode()
     else:
         method = payload.method or "aes-128-gcm"
-        secret = payload.password or uid
+        secret = payload.password or random_token(24)
         userinfo = base64.urlsafe_b64encode(f"{method}:{secret}".encode()).decode().rstrip("=")
         link = f"ss://{userinfo}@{address}:{payload.port}#{name}"
     return link, {"id": str(uuid4()), "name": payload.name, "protocol": payload.protocol, "link": link, "address": address, "port": payload.port, "node_key": payload.node_key.upper() if payload.node_key else None, "enabled": True, "created_at": utcnow().isoformat()}
@@ -138,8 +139,11 @@ def create_direct_config(subscription_id: int, payload: DirectConfigCreate, requ
     if not sub:
         raise HTTPException(status_code=404, detail="subscription_not_found")
     _owner(user, sub)
-    if not sub.enabled or sub.expires_at <= utcnow():
+    if not sub.enabled:
         raise HTTPException(status_code=409, detail="subscription_inactive")
+    expires_at = sub.expires_at
+    if expires_at is not None and expires_at <= utcnow():
+        raise HTTPException(status_code=409, detail="subscription_expired")
     link, row = _build(payload, db)
     rows = [] if payload.replace else _load(sub)
     rows.append(row)
@@ -152,10 +156,10 @@ def create_direct_config(subscription_id: int, payload: DirectConfigCreate, requ
         sub.token_enc = encrypt_secret(raw)
     record(db, user, "subscription.direct_config.create", "subscription", str(sub.id), request.client.host if request.client else "", {"protocol": payload.protocol, "name": payload.name})
     db.commit()
-    from app.core.config import settings
-    base = settings.public_base_url.rstrip("/") if getattr(settings, "public_base_url", "") else f"{request.url.scheme}://{request.headers.get('host') or request.url.netloc}"
     raw_token = decrypt_secret(sub.token_enc)
-    return {"ok": True, "config": row, "link": link, "subscription_url": f"{base}/link/{raw_token}", "raw_url": f"{base}/link/{raw_token}/raw", "inbound_required": False}
+    base = _public_subscription_base(request, db)
+    subscription_url = f"{base}{quote(raw_token, safe='')}"
+    return {"ok": True, "config": row, "link": link, "subscription_url": subscription_url, "raw_url": f"{subscription_url}/raw", "inbound_required": False, "credential_source": "protocol_generated"}
 
 
 @router.patch("/subscriptions/{subscription_id}/direct-configs/{config_id}")
