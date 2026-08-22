@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, require_roles
-from app.core.security import encrypt_secret, token_hash, utcnow
+from app.core.security import encrypt_secret, random_token, token_hash, utcnow
 from app.db.base import get_db
 from app.models.entities import Node, Plan, Route, Subscription, SystemSetting, User
 from app.schemas import ConfigBuildRequest, PanelDomainUpdate
@@ -160,11 +160,18 @@ def create_custom_config(payload: CustomConfigRequest, request: Request, db: Ses
         cleaned = _custom_lines(sub) + cleaned
     if len(cleaned) > 100:
         raise HTTPException(status_code=422, detail="too_many_configs")
+    raw_token = random_token(48)
+    sub.token_hash = token_hash(raw_token)
+    sub.token_enc = encrypt_secret(raw_token)
     sub.config_enc = encrypt_secret(json.dumps({"protocol": payload.protocol, "links": cleaned}, separators=(",", ":")))
     from app.services.audit import record
     record(db, user, "subscription.custom_config", "subscription", str(sub.id), request.client.host if request.client else "", {"protocol": payload.protocol, "count": len(cleaned)})
     db.commit()
-    return {"ok": True, "subscription_id": sub.id, "protocol": payload.protocol, "config_count": len(cleaned), "message": "inbound_free_config_saved"}
+    scheme = request.url.scheme
+    host = request.headers.get("host") or request.url.netloc
+    link = f"{scheme}://{host}/link/{raw_token}"
+    raw_link = f"{link}/raw"
+    return {"ok": True, "subscription_id": sub.id, "protocol": payload.protocol, "config_count": len(cleaned), "subscription_url": link, "raw_url": raw_link, "message": "inbound_free_config_saved"}
 
 
 @router.post("/routes/{route_id}/build-config")
