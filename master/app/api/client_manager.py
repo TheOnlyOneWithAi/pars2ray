@@ -4,7 +4,7 @@ from datetime import timedelta
 from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import request_ip, require_roles
@@ -19,6 +19,19 @@ router = APIRouter(prefix="/api/v1/clients", tags=["clients"])
 
 def _client_id(token_hash_value: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"pars2ray:{token_hash_value}"))
+
+
+def _lock_sqlite_write(db: Session) -> None:
+    if db.get_bind().dialect.name == "sqlite":
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+
+
+def _lock_user(db: Session, user_id: int) -> None:
+    dialect = db.get_bind().dialect.name
+    if dialect == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": int(user_id)})
+    elif dialect != "sqlite":
+        db.execute(select(User.id).where(User.id == user_id).with_for_update())
 
 
 def _get_client(db: Session, client_id: int) -> Subscription:
@@ -97,6 +110,8 @@ def list_clients(search: str = "", enabled: bool | None = None, limit: int = 200
 
 @router.post("", response_model=ClientOut, status_code=201)
 def create_client(payload: ClientCreate, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER"))) -> ClientOut:
+    _lock_sqlite_write(db)
+    _lock_user(db, payload.user_id)
     target = db.get(User, payload.user_id)
     if not target or not target.is_active:
         raise HTTPException(status_code=404, detail="user_not_found")
@@ -133,17 +148,17 @@ def create_client(payload: ClientCreate, request: Request, db: Session = Depends
 
 @router.patch("/{client_id}", response_model=ClientOut)
 def update_client(client_id: int, payload: ClientUpdate, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER"))) -> ClientOut:
+    _lock_sqlite_write(db)
     client = _get_client(db, client_id)
+    _lock_user(db, client.user_id)
     _ensure_owner(user, client)
     target = db.get(User, client.user_id)
     plan = db.get(Plan, client.plan_id) if client.plan_id is not None else None
-
     if payload.clear_plan:
         client.plan_id = None
         plan = None
         if target is not None:
             client.expires_at = target.expires_at
-
     if payload.plan_id is not None:
         if payload.clear_plan:
             raise HTTPException(status_code=422, detail="clear_plan_and_plan_id_are_mutually_exclusive")
@@ -153,21 +168,17 @@ def update_client(client_id: int, payload: ClientUpdate, request: Request, db: S
         if client.enabled:
             _ensure_plan_capacity(db, client.user_id, plan, exclude_id=client.id)
         client.plan_id = plan.id
-
     if payload.node_keys is not None:
         keys = list(dict.fromkeys(key.strip().upper() for key in payload.node_keys if key.strip()))
         if len(keys) > 20:
             raise HTTPException(status_code=422, detail="too_many_nodes")
         client.node_keys = keys
-
     if payload.quota_gb is not None and client.plan_id is None and target is not None:
         target.quota_gb = float(payload.quota_gb)
-
     if payload.duration_days is not None:
         client.expires_at = utcnow() + timedelta(days=payload.duration_days) if payload.duration_days > 0 else None
         if client.plan_id is None and target is not None:
             target.expires_at = client.expires_at
-
     if payload.enabled is not None:
         if payload.enabled:
             plan = db.get(Plan, client.plan_id) if client.plan_id is not None else None
@@ -177,14 +188,12 @@ def update_client(client_id: int, payload: ClientUpdate, request: Request, db: S
             if expires_at is not None and expires_at <= utcnow():
                 raise HTTPException(status_code=422, detail="expires_at_must_be_future")
         client.enabled = payload.enabled
-
     if payload.expires_at is not None:
         if payload.expires_at <= utcnow():
             raise HTTPException(status_code=422, detail="expires_at_must_be_future")
         client.expires_at = payload.expires_at
         if client.plan_id is None and target is not None:
             target.expires_at = payload.expires_at
-
     record(db, user, "client.update", "client", str(client.id), request_ip(request))
     db.commit()
     db.refresh(client)
@@ -193,7 +202,9 @@ def update_client(client_id: int, payload: ClientUpdate, request: Request, db: S
 
 @router.post("/{client_id}/reset-traffic", response_model=ClientOut)
 def reset_client_traffic(client_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER"))) -> ClientOut:
+    _lock_sqlite_write(db)
     client = _get_client(db, client_id)
+    _lock_user(db, client.user_id)
     _ensure_owner(user, client)
     client.used_gb = 0
     target = db.get(User, client.user_id)
@@ -207,7 +218,9 @@ def reset_client_traffic(client_id: int, request: Request, db: Session = Depends
 
 @router.delete("/{client_id}")
 def delete_client(client_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles("SUPER_ADMIN", "ADMIN", "RESELLER"))) -> dict[str, bool]:
+    _lock_sqlite_write(db)
     client = _get_client(db, client_id)
+    _lock_user(db, client.user_id)
     _ensure_owner(user, client)
     record(db, user, "client.delete", "client", str(client.id), request_ip(request))
     db.delete(client)
