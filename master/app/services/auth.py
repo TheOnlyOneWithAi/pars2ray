@@ -31,14 +31,14 @@ def ensure_seed(db: Session) -> None:
         admin.roles = [roles["SUPER_ADMIN"]]
         db.add(admin)
     else:
-        if settings.admin_password and not verify_password(settings.admin_password, admin.password_hash):
-            admin.password_hash = hash_password(settings.admin_password)
+        # Bootstrap credentials are only applied when the account is first
+        # created. Never reset a password changed from the panel on restart.
         if admin.email != settings.admin_email:
             admin.email = settings.admin_email
         if not admin.is_active:
             admin.is_active = True
-        if not admin.roles:
-            admin.roles = [roles["SUPER_ADMIN"]]
+        if roles["SUPER_ADMIN"] not in admin.roles:
+            admin.roles.append(roles["SUPER_ADMIN"])
 
     db.commit()
 
