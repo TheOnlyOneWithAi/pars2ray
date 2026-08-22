@@ -147,7 +147,7 @@ def command(request: CommandRequest, x_agent_token: str | None = Header(default=
     if request.command == Command.UPDATE_EXISTING_INBOUNDS:
         return update_existing_inbounds(request.payload.get("updates", []))
     if request.command == Command.ROLLBACK:
-        return rollback()
+        return rollback(str(request.payload.get("operation_id") or "").strip())
     if request.command == Command.RESTART_SERVICE:
         return restart_service()
     raise HTTPException(status_code=400, detail="unsupported_command")
