@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import secrets
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,7 +15,7 @@ from app.db.base import get_db
 from app.models.entities import Node, User
 from app.services import agent_client
 from app.services.candidate_engine import generate
-from app.services.inbound_store import create_client, create_inbound, delete_client, ensure_tables, get_client, list_clients, list_inbounds, mark_selected, select_inbound
+from app.services.inbound_store import create_client, create_inbound, delete_client, ensure_tables, list_clients, list_inbounds, select_inbound
 
 router = APIRouter(prefix="/api/v1")
 
@@ -72,7 +71,7 @@ def _vless_link(client: dict, inbound: dict, node: Node) -> str:
             query["sid"] = str((cfg.get("reality") or {})["short_id"])
     host = node.endpoint.rsplit(":", 1)[0] if ":" in node.endpoint else node.endpoint
     label = quote(client["name"], safe="")
-    return f"vless://{client['uuid']}@{host}:{inbound['port']}?{ '&'.join(f'{quote(k)}={quote(v)}' for k,v in query.items()) }#{label}"
+    return f"vless://{client['uuid']}@{host}:{inbound['port']}?{'&'.join(f'{quote(k)}={quote(v)}' for k,v in query.items())}#{label}"
 
 
 def _config_links(client: dict, selected: list[dict], nodes: dict[str, Node]) -> list[dict]:
@@ -128,7 +127,6 @@ async def select_ai_inbound(payload: InboundSelection, db: Session = Depends(get
     data = {"name": payload.name, "node_key": node.node_key, "core": payload.core, "protocol": payload.protocol, "port": payload.port, "transport": payload.transport, "security": payload.security, "config_json": config, "score": int(round(_score(node, payload.model_dump()))), "status": "ACTIVE", "is_selected": True, "created_at": utcnow()}
     row = create_inbound(db, data)
     try:
-        # Apply only the selected inbound to the selected node. AI recommends; the operator explicitly chooses.
         await agent_client.apply_config(node, {"source": "pars2ray-ai", "inbounds": [row]})
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"node_apply_failed: {exc}") from exc
