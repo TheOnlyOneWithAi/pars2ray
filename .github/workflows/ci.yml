@@ -94,6 +94,8 @@ jobs:
         run: python -c "import installer.bootstrap; import installer.discover_nodes; import installer.generate_env"
       - name: Validate Native Installer syntax
         run: bash -n deploy/install.sh deploy/scripts/native-backup.sh deploy/scripts/native-restore.sh deploy/scripts/rollback.sh
+      - name: ShellCheck deployment scripts
+        run: shellcheck -x -S error deploy/install.sh deploy/scripts/*.sh
       - name: Validate APT mirror policy
         run: |
           ! grep -Rni 'mirror\.iranserver\.com' deploy installer
