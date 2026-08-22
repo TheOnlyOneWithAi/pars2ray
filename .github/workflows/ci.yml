@@ -70,12 +70,7 @@ jobs:
           JWT_SECRET: ci-jwt-secret-at-least-32-characters
           MASTER_SECRET: ci-master-secret-at-least-32-characters
           ADMIN_PASSWORD: ci-admin-password
-        run: |
-          if [ -d tests ] && find tests -type f \( -name 'test_*.py' -o -name '*_test.py' \) | grep -q .; then
-            pytest -q tests
-          else
-            echo "No repository-level tests found."
-          fi
+        run: pytest -q tests
 
   installer:
     name: Native Installer validation
@@ -98,7 +93,7 @@ jobs:
       - name: Validate installer imports
         run: python -c "import installer.bootstrap; import installer.discover_nodes; import installer.generate_env"
       - name: Validate Native Installer syntax
-        run: bash -n deploy/install.sh
+        run: bash -n deploy/install.sh deploy/scripts/native-backup.sh deploy/scripts/native-restore.sh deploy/scripts/rollback.sh
       - name: Validate APT mirror policy
         run: |
           ! grep -Rni 'mirror\.iranserver\.com' deploy installer
@@ -167,4 +162,58 @@ jobs:
         working-directory: frontend
         run: npm audit --omit=dev --audit-level=high
 
-# CI trigger marker: Xray management pass validation baseline v2.
+  release-gates:
+    name: E2E, migrations, backup/restore and rollback gates
+    runs-on: ubuntu-latest
+    needs: [backend, installer, frontend, security]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install application dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r master/requirements.txt pytest pytest-asyncio ruff
+      - name: Run release gate tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/master
+          ENVIRONMENT: test
+          DATABASE_URL: sqlite:////tmp/pars2ray-release.db
+          JWT_SECRET: ci-jwt-secret-at-least-32-characters
+          MASTER_SECRET: ci-master-secret-at-least-32-characters
+          ADMIN_PASSWORD: ci-admin-password
+        run: pytest -q tests/test_release_gates.py tests/test_e2e_smoke.py
+      - name: Migration upgrade/downgrade/upgrade smoke test
+        env:
+          PYTHONPATH: ${{ github.workspace }}/master
+          ENVIRONMENT: test
+          DATABASE_URL: sqlite:////tmp/pars2ray-migration.db
+          JWT_SECRET: ci-jwt-secret-at-least-32-characters
+          MASTER_SECRET: ci-master-secret-at-least-32-characters
+          ADMIN_PASSWORD: ci-admin-password
+        run: |
+          rm -f /tmp/pars2ray-migration.db
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+      - name: Native backup/restore executable smoke test
+        run: |
+          test -x deploy/scripts/native-backup.sh || chmod +x deploy/scripts/native-backup.sh
+          test -x deploy/scripts/native-restore.sh || chmod +x deploy/scripts/native-restore.sh
+          test -x deploy/scripts/rollback.sh || chmod +x deploy/scripts/rollback.sh
+          bash -n deploy/scripts/native-backup.sh deploy/scripts/native-restore.sh deploy/scripts/rollback.sh
+      - name: Installer upgrade contract test
+        run: |
+          grep -q 'Existing installation detected; keeping panel credentials and settings' deploy/install.sh
+          grep -q 'git -C "$INSTALL_DIR" fetch --depth 1 origin "$REF"' deploy/install.sh
+          grep -q 'git -C "$INSTALL_DIR" reset --hard "origin/$REF"' deploy/install.sh
+      - name: Rollback safety contract test
+        run: |
+          grep -q 'working tree is dirty; refusing rollback' deploy/scripts/rollback.sh
+          grep -q 'rev-parse --verify' deploy/scripts/rollback.sh
+          grep -q 'systemctl restart pars2ray-master pars2ray-worker' deploy/scripts/rollback.sh
+
+# All release gates must pass before CI is considered green.
