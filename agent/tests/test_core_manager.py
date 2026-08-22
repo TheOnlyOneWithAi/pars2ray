@@ -1,7 +1,5 @@
 import json
 
-import pytest
-
 from app.services import core_manager
 
 
