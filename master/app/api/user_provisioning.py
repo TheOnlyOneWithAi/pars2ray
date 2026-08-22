@@ -54,8 +54,15 @@ def create_user_with_subscription(payload: UserCreate, request: Request, quota_g
         if missing:
             raise HTTPException(status_code=422, detail={"code": "unknown_nodes", "nodes": missing})
 
-    effective_quota = float(quota_gb if quota_gb is not None else (payload.quota_gb if payload.plan_id is None else plan.quota_gb if plan else 0))
-    effective_duration = duration_days if duration_days is not None else (payload.duration_days if payload.plan_id is None else plan.duration_days if plan else 0)
+    # A plan is a complete entitlement template. Direct quota/duration fields
+    # are used only for plan-less users, avoiding two conflicting sources of truth.
+    if plan is not None:
+        effective_quota = float(plan.quota_gb or 0)
+        effective_duration = int(plan.duration_days or 0)
+    else:
+        effective_quota = float(quota_gb if quota_gb is not None else payload.quota_gb)
+        effective_duration = int(duration_days if duration_days is not None else payload.duration_days)
+
     expires_at = payload.expires_at
     if expires_at is None and effective_duration > 0:
         expires_at = utcnow() + timedelta(days=effective_duration)
@@ -97,8 +104,6 @@ def update_user_limits(user_id: int, payload: UserUpdate, request: Request, db: 
             raise HTTPException(status_code=422, detail="expires_at_must_be_future")
         target.expires_at = payload.expires_at
 
-    # Plan-less subscriptions inherit the user's direct entitlement. Keep their
-    # mirrored expiry synchronized so an old subscription value cannot override it.
     for sub in db.scalars(select(Subscription).where(Subscription.user_id == target.id, Subscription.plan_id.is_(None), Subscription.enabled.is_(True))).all():
         sub.expires_at = target.expires_at
 
