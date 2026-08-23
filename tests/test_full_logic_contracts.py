@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.services.scheduler import _counter_delta
 from app.services.telemetry import hourly_traffic
 
 
@@ -19,6 +20,12 @@ def test_telemetry_uses_counter_deltas_not_cumulative_sums() -> None:
     result = hourly_traffic(rows)
     assert result[0]["rx_bytes"] == 300
     assert result[0]["tx_bytes"] == 200
+
+
+def test_counter_delta_treats_node_counter_reset_as_new_baseline() -> None:
+    assert _counter_delta(1300, 1000) == 300
+    assert _counter_delta(100, 1000) == 0
+    assert _counter_delta(-1, 0) == 0
 
 
 def test_node_schema_exposes_runtime_fields_used_by_frontend() -> None:
