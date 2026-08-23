@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.services.core_manager import apply, capability, core_status, restart_service, rollback
 from app.services.inbound_manager import current_config, update_existing_inbounds
 
-AGENT_VERSION = os.getenv("AGENT_VERSION", "2.0.0")
+AGENT_VERSION = os.getenv("AGENT_VERSION", "2.3.0")
 NODE_KEY = os.getenv("NODE_KEY", "UNSET")
 COUNTRY = os.getenv("COUNTRY", "")
 AGENT_TOKEN = os.getenv("AGENT_TOKEN", "")
