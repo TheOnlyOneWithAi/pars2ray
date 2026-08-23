@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.services.core_manager import apply, capability, core_status, restart_service, rollback
 from app.services.inbound_manager import current_config, update_existing_inbounds
+from app.services.operations import firewall_status, logs as service_logs, service_action, update as update_core, version as core_version
 
 AGENT_VERSION = os.getenv("AGENT_VERSION", "2.3.0")
 NODE_KEY = os.getenv("NODE_KEY", "UNSET")
@@ -92,7 +93,6 @@ def _public_addresses(host: str) -> list[tuple[int, str]]:
 
 
 def _connect_address(family: int, address: str, port: int) -> tuple:
-    """Build the sockaddr expected by IPv4 and IPv6 sockets."""
     if family == socket.AF_INET6:
         return (address, port, 0, 0)
     return (address, port)
@@ -129,6 +129,12 @@ class Command(StrEnum):
     UPDATE_EXISTING_INBOUNDS = "UPDATE_EXISTING_INBOUNDS"
     ROLLBACK = "ROLLBACK"
     RESTART_SERVICE = "RESTART_SERVICE"
+    START_SERVICE = "START_SERVICE"
+    STOP_SERVICE = "STOP_SERVICE"
+    CORE_VERSION = "CORE_VERSION"
+    CORE_LOGS = "CORE_LOGS"
+    UPDATE_CORE = "UPDATE_CORE"
+    FIREWALL_STATUS = "FIREWALL_STATUS"
 
 
 class CommandRequest(BaseModel):
@@ -157,4 +163,16 @@ def command(request: CommandRequest, x_agent_token: str | None = Header(default=
         return rollback(str(request.payload.get("operation_id") or "").strip())
     if request.command == Command.RESTART_SERVICE:
         return restart_service()
+    if request.command == Command.START_SERVICE:
+        return service_action("start")
+    if request.command == Command.STOP_SERVICE:
+        return service_action("stop")
+    if request.command == Command.CORE_VERSION:
+        return core_version()
+    if request.command == Command.CORE_LOGS:
+        return service_logs(request.payload.get("lines", 200))
+    if request.command == Command.UPDATE_CORE:
+        return update_core()
+    if request.command == Command.FIREWALL_STATUS:
+        return firewall_status()
     raise HTTPException(status_code=400, detail="unsupported_command")
