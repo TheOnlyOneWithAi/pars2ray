@@ -18,14 +18,29 @@ def admin():
 
 
 EDITABLE = {
-    "optimizer.enabled", "optimizer.min_score_change", "national_mode.enabled",
-    "ai.enabled", "ai.model", "ai.api_key", "ai.level", "ai.autonomous",
-    "ai.probe_country", "ai.max_nodes", "ai.max_candidates",
+    "optimizer.enabled",
+    "optimizer.min_score_change",
+    "national_mode.enabled",
+    "ai.enabled",
+    "ai.model",
+    "ai.api_key",
+    "ai.level",
+    "ai.autonomous",
+    "ai.failover_on_iran_disconnect",
+    "ai.probe_country",
+    "ai.max_nodes",
+    "ai.max_candidates",
 }
 
 
 def _validate(key: str, value: str) -> None:
-    if key in {"ai.enabled", "ai.autonomous", "optimizer.enabled", "national_mode.enabled"} and value.lower() not in {"true", "false"}:
+    if key in {
+        "ai.enabled",
+        "ai.autonomous",
+        "ai.failover_on_iran_disconnect",
+        "optimizer.enabled",
+        "national_mode.enabled",
+    } and value.lower() not in {"true", "false"}:
         raise HTTPException(status_code=422, detail=f"{key}_must_be_boolean")
     if key == "ai.model" and not value:
         raise HTTPException(status_code=422, detail="invalid_ai_model")
@@ -33,7 +48,9 @@ def _validate(key: str, value: str) -> None:
         raise HTTPException(status_code=422, detail="invalid_openai_api_key")
     if key == "ai.level":
         try:
-            if not 0 <= int(value) <= 4 and value.lower() not in {"off", "advisor", "inbounds", "nodes", "autonomous"}:
+            valid_number = 0 <= int(value) <= 4
+            valid_name = value.lower() in {"off", "advisor", "inbounds", "nodes", "autonomous"}
+            if not valid_number and not valid_name:
                 raise ValueError
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="ai.level_must_be_0_to_4") from exc
@@ -51,18 +68,31 @@ def _validate(key: str, value: str) -> None:
 @router.get("/system/settings", tags=["system"])
 def list_settings(db: Session = Depends(get_db), user: User = admin()) -> list[dict]:
     rows = db.scalars(select(SystemSetting).order_by(SystemSetting.key)).all()
-    return [{"key": row.key, "is_secret": row.is_secret, "updated_at": row.updated_at} for row in rows]
+    return [
+        {"key": row.key, "is_secret": row.is_secret, "updated_at": row.updated_at}
+        for row in rows
+    ]
 
 
 @router.put("/system/settings/{key}", tags=["system"])
-def update_setting(key: str, payload: SystemSettingUpdate, request: Request, db: Session = Depends(get_db), user: User = admin()) -> dict:
+def update_setting(
+    key: str,
+    payload: SystemSettingUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = admin(),
+) -> dict:
     if key not in EDITABLE:
         raise HTTPException(status_code=422, detail="setting_not_editable")
     value = payload.value.strip()
     _validate(key, value)
     row = db.scalar(select(SystemSetting).where(SystemSetting.key == key))
     if not row:
-        row = SystemSetting(key=key, value_enc=encrypt_secret(value), is_secret=(key == "ai.api_key"))
+        row = SystemSetting(
+            key=key,
+            value_enc=encrypt_secret(value),
+            is_secret=key == "ai.api_key",
+        )
         db.add(row)
     else:
         row.value_enc = encrypt_secret(value)
@@ -73,10 +103,25 @@ def update_setting(key: str, payload: SystemSettingUpdate, request: Request, db:
 
 @router.get("/system/ai-status", tags=["system"])
 def ai_status(db: Session = Depends(get_db), user: User = admin()) -> dict:
-    keys = ["ai.enabled", "ai.model", "ai.api_key", "ai.level", "ai.autonomous", "ai.probe_country", "ai.max_nodes", "ai.max_candidates"]
-    rows = {row.key: row for row in db.scalars(select(SystemSetting).where(SystemSetting.key.in_(keys))).all()}
+    keys = [
+        "ai.enabled",
+        "ai.model",
+        "ai.api_key",
+        "ai.level",
+        "ai.autonomous",
+        "ai.failover_on_iran_disconnect",
+        "ai.probe_country",
+        "ai.max_nodes",
+        "ai.max_candidates",
+    ]
+    rows = {
+        row.key: row
+        for row in db.scalars(select(SystemSetting).where(SystemSetting.key.in_(keys))).all()
+    }
+
     def value(key: str, default: str) -> str:
         return decrypt_secret(rows[key].value_enc) if key in rows else default
+
     enabled = value("ai.enabled", "false").lower() == "true"
     configured = "ai.api_key" in rows
     return {
@@ -85,6 +130,10 @@ def ai_status(db: Session = Depends(get_db), user: User = admin()) -> dict:
         "model": value("ai.model", "gpt-5-mini"),
         "level": value("ai.level", "0"),
         "autonomous": value("ai.autonomous", "false").lower() == "true",
+        "failover_on_iran_disconnect": value(
+            "ai.failover_on_iran_disconnect", "true"
+        ).lower()
+        == "true",
         "probe_country": value("ai.probe_country", "IR").upper(),
         "max_nodes": int(value("ai.max_nodes", "50")),
         "max_candidates": int(value("ai.max_candidates", "12")),
