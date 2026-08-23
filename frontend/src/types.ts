@@ -1,12 +1,13 @@
 export type Page = 'dashboard' | 'nodes' | 'ai-inbounds' | 'users' | 'control' | 'settings'
 export type Locale = 'en' | 'fa' | 'ru'
+export type JsonObject = Record<string, unknown>
 
-export type Node = { id:number; node_key:string; country:string; endpoint:string; status:string; score:number; cpu_percent:number; memory_percent:number; traffic_rx_bytes:number; traffic_tx_bytes:number; latency_ms:number; core:string; core_version:string; agent_version:string; capabilities:Record<string,unknown>; last_seen_at:string|null; created_at:string }
+export type Node = { id:number; node_key:string; country:string; endpoint:string; status:string; score:number; cpu_percent:number; memory_percent:number; traffic_rx_bytes:number; traffic_tx_bytes:number; latency_ms:number; core:string; core_version:string; agent_version:string; capabilities:JsonObject; last_seen_at:string|null; created_at:string }
 export type Dashboard = { node_count:number; online_nodes:number; network_health:number; traffic:{rx_bytes:number;tx_bytes:number}; current_best_route:string|null; ai_status:string; mode:string; user_count:number; subscription_count:number }
 export type Route = { id:number; name:string; node_keys:string[]; core:string; protocol:string; transport:string; status:string; score:number; is_active:boolean; is_golden:boolean; consecutive_wins:number; updated_at:string }
 export type Experiment = { id:number; candidate_id:string; node_keys:string[]; core:string; protocol:string; transport:string; score:number; latency_ms:number; jitter_ms:number; packet_loss_percent:number; throughput_mbps:number; stability_percent:number; level:string; decision:string; created_at:string }
 export type Decision = { id:number; current_score:number; proposed_score:number; action:string; candidate_id:string|null; reason:string; ai_called:boolean; model:string; input_tokens:number; cached_tokens:number; output_tokens:number; created_at:string }
-export type Candidate = { candidate_id:string; path:string[]; core:string; protocol:string; transport:string; settings:Record<string,unknown>; score?:number }
+export type Candidate = { candidate_id:string; path:string[]; core:string; protocol:string; transport:string; settings:JsonObject; score?:number }
 export type NodeMetric = { id:number; latency_ms:number; jitter_ms:number; packet_loss_percent:number; throughput_mbps:number; cpu_percent:number; memory_percent:number; stability_percent:number; measured_at:string }
 export type TelemetryPoint = { timestamp:string; rx_bytes:number; tx_bytes:number; samples:number }
 export type TrafficBreakdown = { node_key:string; country:string; rx_bytes:number; tx_bytes:number; samples:number }
@@ -18,12 +19,22 @@ export type NationalMode = { mode:string; failures:number; successes:number }
 export type AuditLog = { id:number; action:string; actor_username:string; resource_type:string; resource_id:string; ip_address:string; created_at:string }
 export type TokenPair = { access_token:string; refresh_token:string; token_type:string; expires_in:number }
 
-export type ControlOutbound = { id?:string; tag:string; protocol:string; settings?:Record<string,unknown>; streamSettings?:Record<string,unknown>; proxySettings?:Record<string,unknown>; mux?:Record<string,unknown>; [key:string]:unknown }
+export type ControlOutbound = { id?:string; tag:string; protocol:string; settings?:JsonObject; streamSettings?:JsonObject; proxySettings?:JsonObject; mux?:JsonObject; [key:string]:unknown }
 export type ControlRoutingRule = { id?:string; domain?:string[]; ip?:string[]; port?:string|number; network?:string[]; source?:string[]; sourcePort?:string|number; user?:string[]; inboundTag?:string[]; protocol?:string[]; attrs?:string; outboundTag?:string; balancerTag?:string; [key:string]:unknown }
 export type ControlBalancer = { tag:string; selector:string[]; strategy?:string; fallbackTag?:string; [key:string]:unknown }
 export type ControlFallback = { dest:string|number; xver?:number; alpn?:string[]; path?:string; name?:string; [key:string]:unknown }
 export type ControlRouting = { domainStrategy?:string; rules:ControlRoutingRule[]; balancers?:ControlBalancer[]; [key:string]:unknown }
-export type ControlSettings = { outbounds:ControlOutbound[]; routing:ControlRouting; balancers:ControlBalancer[]; fallbacks:ControlFallback[]; templates:Record<string,string>; geo:Record<string,unknown>; fail2ban:Record<string,unknown>; telegram:Record<string,unknown>; panel:Record<string,unknown> }
+export type ControlSettings = { outbounds:ControlOutbound[]; routing:ControlRouting; balancers:ControlBalancer[]; fallbacks:ControlFallback[]; templates:Record<string,string>; geo:JsonObject; fail2ban:JsonObject; telegram:JsonObject; panel:JsonObject }
 export type ControlCapabilities = { cores:string[]; protocols:string[]; transports:string[]; security:string[]; outbound_protocols:string[]; features:string[] }
+
+export type Inbound = { id:number; name:string; node_key:string; core:string; protocol:string; port:number; transport:string; security:string; status:string; score:number; is_selected:boolean; config_json?:JsonObject; created_at:string }
+export type InboundRecommendation = Candidate & { node:{node_key:string;country:string;endpoint:string;core:string;latency_ms:number}; score:number }
+export type InboundRecommendationsResponse = { candidates:InboundRecommendation[]; generated_at:string }
+export type ClientUser = { id:number; name:string; email:string|null; uuid:string; inbound_ids:number[]; configs:Array<{inbound_id:number;protocol:string;link:string;config?:unknown;note?:string}> }
+export type ClientCreatePayload = { name:string; email?:string|null; inbound_ids?:number[] }
+export type NodeProvisionPayload = { node_key:string; country:string; ssh:{host:string;port?:number;username:string;password:string} }
+export type NodeUpdatePayload = { country?:string; ssh?:{host:string;port?:number;username:string;password?:string} }
 export type BackupExport = { format:'pars2ray-backup'; version:1; created_at:string; tables:Record<string,Array<Record<string,unknown>>> }
 export type OperationResult = { ok:boolean; [key:string]:unknown }
+export type TelegramTestPayload = { chat_id:string; message?:string }
+export type ApiError = { detail?:string|JsonObject|string[]; message?:string }
