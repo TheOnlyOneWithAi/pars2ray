@@ -19,6 +19,7 @@ from app.api.client_runtime import router as client_runtime_router
 from app.api.direct_configs import router as direct_configs_router
 from app.api.inbounds import router as inbounds_router
 from app.api.node_operations import router as node_operations_router
+from app.api.operations import router as operations_router
 from app.api.routes import router
 from app.api.protocols import router as protocols_router
 from app.api.subscription_server import public_router as subscription_public_router, router as subscription_router
@@ -123,6 +124,7 @@ app.include_router(ai_settings_router)
 app.include_router(ai_config_router)
 app.include_router(ai_autopilot_router)
 app.include_router(advanced_control_router)
+app.include_router(operations_router)
 app.include_router(node_operations_router)
 app.include_router(client_runtime_router)
 app.include_router(subscription_router)
