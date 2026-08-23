@@ -3,14 +3,46 @@ from __future__ import annotations
 import hashlib
 import json
 
-SUPPORTED_PROTOCOLS = ["vless", "vmess", "trojan", "shadowsocks", "http", "socks", "dokodemo-door", "wireguard", "tun"]
-SUPPORTED_SINGBOX_PROTOCOLS = ["vless", "vmess", "trojan", "shadowsocks", "hysteria2"]
-SUPPORTED_TRANSPORTS = ["tcp", "grpc", "websocket", "httpupgrade", "xhttp", "quic", "kcp"]
+SUPPORTED_PROTOCOLS = [
+    "vless",
+    "vmess",
+    "trojan",
+    "shadowsocks",
+    "wireguard",
+    "hysteria2",
+    "tunnel",
+    "mixed",
+    "http",
+    "socks",
+    "dokodemo-door",
+    "tun",
+    "mtproto",
+]
+SUPPORTED_SINGBOX_PROTOCOLS = [
+    "vless",
+    "vmess",
+    "trojan",
+    "shadowsocks",
+    "hysteria2",
+    "mixed",
+    "tun",
+]
+SUPPORTED_TRANSPORTS = [
+    "tcp",
+    "grpc",
+    "websocket",
+    "httpupgrade",
+    "xhttp",
+    "quic",
+    "kcp",
+]
 SUPPORTED_CORES = ["xray", "sing-box"]
 
 
 def make_id(obj: dict) -> str:
-    return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(
+        json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:16]
 
 
 def generate(nodes: list[str], max_candidates: int = 30, allow_experimental: bool = False) -> list[dict]:
@@ -27,7 +59,13 @@ def generate(nodes: list[str], max_candidates: int = 30, allow_experimental: boo
             protocols = SUPPORTED_SINGBOX_PROTOCOLS if core == "sing-box" else SUPPORTED_PROTOCOLS
             for protocol in protocols:
                 for transport in transports:
-                    candidate = {"path": [node], "core": core, "protocol": protocol, "transport": transport, "settings": {}}
+                    candidate = {
+                        "path": [node],
+                        "core": core,
+                        "protocol": protocol,
+                        "transport": transport,
+                        "settings": {},
+                    }
                     candidate_id = make_id(candidate)
                     if candidate_id in seen:
                         continue
