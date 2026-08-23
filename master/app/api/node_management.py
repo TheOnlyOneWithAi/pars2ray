@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, request_ip, require_roles
-from app.core.security import encrypt_secret, token_hash
+from app.core.security import decrypt_secret, encrypt_secret, token_hash
 from app.db.base import get_db
 from app.models.entities import Node, User
 from app.services import agent_client
@@ -139,11 +139,29 @@ def update_node(node_key: str, payload: NodeUpdateRequest, request: Request, db:
     node = db.scalar(select(Node).where(Node.node_key == node_key))
     if not node:
         raise HTTPException(status_code=404, detail="node_not_found")
-    if payload.country is not None:
-        node.country = payload.country
+
+    # SSH is the source of truth. Changing the SSH target/credentials without
+    # reinstalling the agent leaves the database pointing at a host that does
+    # not possess this node's token. Provision the new target first and only
+    # then switch the persisted management state, so a failed update cannot
+    # destroy a healthy existing node.
     if payload.ssh is not None:
+        ssh_config = payload.ssh.to_config()
+        country = payload.country or node.country
+        try:
+            agent_token = decrypt_secret(node.agent_token_enc)
+            provision_over_ssh(ssh_config, node.node_key, country, agent_token)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"node_reprovision_failed:{exc}") from exc
+
         node.ssh_config_enc = encrypt_secret(json.dumps(payload.ssh.model_dump(), separators=(",", ":")))
         node.endpoint = f"http://{payload.ssh.host}:9100"
+        node.agent_version = "2.3.0"
+        node.status = "REGISTERED"
+
+    if payload.country is not None:
+        node.country = payload.country
+
     record(db, user, "node.update", "node", str(node.id), request_ip(request))
     db.commit()
     db.refresh(node)
