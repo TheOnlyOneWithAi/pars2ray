@@ -39,6 +39,8 @@ class SSHRequest(BaseModel):
 
 
 class NodeProvisionRequest(BaseModel):
+    """Operator-facing node definition: SSH is the source of truth."""
+
     node_key: str = Field(min_length=2, max_length=40, pattern=r"^[A-Z]{2}\d{0,3}$")
     country: str = Field(min_length=2, max_length=2)
     ssh: SSHRequest
@@ -50,8 +52,13 @@ class NodeProvisionRequest(BaseModel):
 
 
 class NodeUpdateRequest(BaseModel):
+    """Only mutable operator-owned metadata and SSH credentials are accepted.
+
+    The agent endpoint is deliberately not configurable from the panel. It is
+    derived from the SSH-managed node installation and is an internal detail.
+    """
+
     country: str | None = Field(default=None, min_length=2, max_length=2)
-    endpoint: str | None = Field(default=None, min_length=1, max_length=255)
     ssh: SSHRequest | None = None
 
     @field_validator("country")
@@ -74,17 +81,31 @@ def test_ssh_connection(payload: SSHRequest) -> dict:
 def provision_node(payload: NodeProvisionRequest, request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
     if db.scalar(select(Node).where(Node.node_key == payload.node_key)):
         raise HTTPException(status_code=409, detail="node_key_exists")
+
     ssh_config = payload.ssh.to_config()
+    # Internal agent address only; operators never have to supply or maintain it.
     endpoint = f"http://{payload.ssh.host}:9100"
     agent_token = secrets.token_urlsafe(48)
-    node = Node(node_key=payload.node_key, country=payload.country, endpoint=endpoint, agent_token_hash=token_hash(agent_token), agent_token_enc=encrypt_secret(agent_token), ssh_config_enc=encrypt_secret(json.dumps(payload.ssh.model_dump(), separators=(",", ":"))), status="PROVISIONING", agent_version="unknown")
+    node = Node(
+        node_key=payload.node_key,
+        country=payload.country,
+        endpoint=endpoint,
+        agent_token_hash=token_hash(agent_token),
+        agent_token_enc=encrypt_secret(agent_token),
+        ssh_config_enc=encrypt_secret(json.dumps(payload.ssh.model_dump(), separators=(",", ":"))),
+        status="PROVISIONING",
+        agent_version="unknown",
+    )
     db.add(node)
     try:
+        # Persist first so a long/failed SSH installation can never make the
+        # node disappear from the managed-node inventory.
         db.commit()
         db.refresh(node)
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="node_key_exists") from exc
+
     node_id = node.id
     try:
         provision_over_ssh(ssh_config, payload.node_key, payload.country, agent_token)
@@ -94,6 +115,7 @@ def provision_node(payload: NodeProvisionRequest, request: Request, db: Session 
             failed_node.status = "FAILED"
             db.commit()
         raise HTTPException(status_code=502, detail=f"node_provision_failed:{exc}") from exc
+
     node = db.get(Node, node_id)
     if node is None:
         raise HTTPException(status_code=500, detail="node_persistence_lost")
@@ -101,7 +123,15 @@ def provision_node(payload: NodeProvisionRequest, request: Request, db: Session 
     node.agent_version = "2.3.0"
     record(db, user, "node.provision", "node", str(node.id), request_ip(request))
     db.commit()
-    return {"id": node.id, "node_key": node.node_key, "country": node.country, "status": node.status, "agent_version": node.agent_version, "provisioned": True}
+    return {
+        "id": node.id,
+        "node_key": node.node_key,
+        "country": node.country,
+        "status": node.status,
+        "agent_version": node.agent_version,
+        "ssh_managed": True,
+        "provisioned": True,
+    }
 
 
 @router.patch("/{node_key}", dependencies=[Depends(require_roles("SUPER_ADMIN", "ADMIN"))])
@@ -111,17 +141,22 @@ def update_node(node_key: str, payload: NodeUpdateRequest, request: Request, db:
         raise HTTPException(status_code=404, detail="node_not_found")
     if payload.country is not None:
         node.country = payload.country
-    if payload.endpoint is not None:
-        endpoint = payload.endpoint.strip().rstrip("/")
-        if not endpoint.startswith(("http://", "https://")):
-            endpoint = f"http://{endpoint}"
-        node.endpoint = endpoint
     if payload.ssh is not None:
         node.ssh_config_enc = encrypt_secret(json.dumps(payload.ssh.model_dump(), separators=(",", ":")))
+        # Keep the internal HTTP endpoint aligned with the SSH host. This is
+        # derived state, never operator-entered state.
+        node.endpoint = f"http://{payload.ssh.host}:9100"
     record(db, user, "node.update", "node", str(node.id), request_ip(request))
     db.commit()
     db.refresh(node)
-    return {"id": node.id, "node_key": node.node_key, "country": node.country, "endpoint": node.endpoint, "status": node.status, "agent_version": node.agent_version}
+    return {
+        "id": node.id,
+        "node_key": node.node_key,
+        "country": node.country,
+        "status": node.status,
+        "agent_version": node.agent_version,
+        "ssh_managed": True,
+    }
 
 
 @router.post("/{node_key}/probe", dependencies=[Depends(require_roles("SUPER_ADMIN", "ADMIN", "OPERATOR"))])
