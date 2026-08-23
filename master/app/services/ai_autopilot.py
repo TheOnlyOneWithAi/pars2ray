@@ -18,8 +18,10 @@ LEVELS = {"off": 0, "advisor": 1, "inbounds": 2, "nodes": 3, "autonomous": 4}
 
 @dataclass(frozen=True)
 class AIPolicy:
+    enabled: bool
     level: int
     autonomous: bool
+    failover_on_iran_disconnect: bool
     probe_country: str
     max_nodes: int
     max_candidates: int
@@ -51,8 +53,13 @@ def policy(db: Session) -> AIPolicy:
             return default
 
     return AIPolicy(
+        enabled=values.get("ai.enabled", "false").lower() == "true",
         level=level,
         autonomous=values.get("ai.autonomous", "false").lower() == "true",
+        failover_on_iran_disconnect=values.get(
+            "ai.failover_on_iran_disconnect", "true"
+        ).lower()
+        == "true",
         probe_country=values.get("ai.probe_country", "IR").upper(),
         max_nodes=bounded("ai.max_nodes", 50),
         max_candidates=bounded("ai.max_candidates", 12),
@@ -96,7 +103,7 @@ async def run(
 ) -> dict:
     p = policy(db)
     trusted_internal = internal_trigger == "iran_node_disconnect"
-    if p.level < 4 or not p.autonomous:
+    if not p.enabled or p.level < 4 or not p.autonomous:
         raise PermissionError("ai_autonomous_mode_not_authorized")
     if not trusted_internal and (user is None or user.role != "SUPER_ADMIN"):
         raise PermissionError("ai_autonomous_mode_not_authorized")
@@ -276,5 +283,10 @@ async def run(
         "created": created,
         "tested": tested,
         "trigger": internal_trigger,
-        "policy": {"level": p.level, "autonomous": p.autonomous},
+        "policy": {
+            "enabled": p.enabled,
+            "level": p.level,
+            "autonomous": p.autonomous,
+            "failover_on_iran_disconnect": p.failover_on_iran_disconnect,
+        },
     }
