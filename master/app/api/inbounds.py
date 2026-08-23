@@ -164,7 +164,7 @@ def get_inbounds(db: Session = Depends(get_db), user: User = Depends(current_use
 
 
 @router.delete("/inbounds/{inbound_id}", tags=["inbounds"])
-def remove_inbound(inbound_id: int, db: Session = Depends(get_db), actor: User = Depends(require_roles("SUPER_ADMIN", "ADMIN"))) -> dict:
+async def remove_inbound(inbound_id: int, db: Session = Depends(get_db), actor: User = Depends(require_roles("SUPER_ADMIN", "ADMIN"))) -> dict:
     _ensure(db)
     row = select_inbound(db, inbound_id)
     if not row:
@@ -172,10 +172,11 @@ def remove_inbound(inbound_id: int, db: Session = Depends(get_db), actor: User =
     node = db.scalar(select(Node).where(Node.node_key == row["node_key"]))
     if node:
         try:
-            result = agent_client
-            _ = result
-        except Exception:
-            pass
+            result = await agent_client.update_existing_inbounds(node, [{"tag": row["name"], "delete": True}])
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"node_apply_failed: {exc}") from exc
+        if not result.get("ok"):
+            raise HTTPException(status_code=502, detail=f"node_apply_failed: {result.get('reason', 'unknown_error')}")
     if not delete_inbound(db, inbound_id):
         raise HTTPException(status_code=404, detail="inbound_not_found")
     return {"ok": True}

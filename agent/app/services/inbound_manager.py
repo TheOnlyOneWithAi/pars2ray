@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -106,7 +107,9 @@ def update_existing_inbounds(updates: list[dict]) -> dict:
         by_tag = {str(item.get("tag")): item for item in inbounds if isinstance(item, dict) and item.get("tag")}
         if len(by_tag) != len([item for item in inbounds if isinstance(item, dict) and item.get("tag")]):
             return {"ok": False, "reason": "inbound_tags_must_be_unique"}
-        seen: set[str] = set()
+        processed: set[str] = set()
+        updated: set[str] = set()
+        deleted: set[str] = set()
         candidate = copy.deepcopy(config)
         active_core = capability().get("active_core", "none")
         allowed = ALLOWED_XRAY if active_core == "xray" else ALLOWED_SINGBOX if active_core == "sing-box" else set()
@@ -116,29 +119,33 @@ def update_existing_inbounds(updates: list[dict]) -> dict:
             if not isinstance(update, dict):
                 return {"ok": False, "reason": "invalid_inbound_update"}
             tag = str(update.get("tag", "")).strip()
-            protocol = str(update.get("protocol", "")).lower().strip()
-            transport = str(update.get("transport", "tcp")).lower().strip()
             if not tag or tag not in by_tag:
                 return {"ok": False, "reason": f"unknown_inbound:{tag}"}
-            if tag in seen:
+            if tag in processed:
                 return {"ok": False, "reason": f"duplicate_inbound:{tag}"}
+            processed.add(tag)
+            if bool(update.get("delete", False)):
+                candidate["inbounds"] = [item for item in candidate["inbounds"] if not (isinstance(item, dict) and str(item.get("tag")) == tag)]
+                deleted.add(tag)
+                continue
+            protocol = str(update.get("protocol", "")).lower().strip()
+            transport = str(update.get("transport", "tcp")).lower().strip()
             if protocol not in allowed:
                 return {"ok": False, "reason": f"unsupported_protocol:{protocol}"}
             if transport not in ALLOWED_TRANSPORTS:
                 return {"ok": False, "reason": f"unsupported_transport:{transport}"}
-            seen.add(tag)
             target = next(item for item in candidate["inbounds"] if isinstance(item, dict) and str(item.get("tag")) == tag)
             if active_core == "xray":
                 _apply_xray(target, protocol, transport)
             else:
                 _apply_singbox(target, protocol, transport)
+            updated.add(tag)
         fd, tmp_name = tempfile.mkstemp(prefix="candidate-inbounds-", suffix=".json", dir=ACTIVE.parent)
         tmp = Path(tmp_name)
         try:
-            with open(fd, "w", encoding="utf-8") as handle:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(candidate, handle, separators=(",", ":"))
                 handle.flush()
-                import os
                 os.fsync(handle.fileno())
             if active_core == "xray":
                 command = ["xray", "run", "-test", "-config", str(tmp)]
@@ -159,7 +166,7 @@ def update_existing_inbounds(updates: list[dict]) -> dict:
             while time.monotonic() < deadline:
                 state = subprocess.run(["systemctl", "is-active", service], capture_output=True, text=True, timeout=3, check=False).stdout.strip()
                 if state == "active":
-                    return {"ok": True, "updated_tags": sorted(seen), "core": active_core}
+                    return {"ok": True, "updated_tags": sorted(updated), "deleted_tags": sorted(deleted), "core": active_core}
                 time.sleep(0.25)
             _atomic_copy(PREVIOUS, ACTIVE)
             subprocess.run(["systemctl", "restart", service], timeout=15, check=False)

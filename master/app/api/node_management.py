@@ -42,7 +42,7 @@ class NodeProvisionRequest(BaseModel):
     """Operator-facing node definition: SSH is the source of truth."""
 
     node_key: str = Field(min_length=2, max_length=40, pattern=r"^[A-Z]{2}\d{0,3}$")
-    country: str = Field(min_length=2, max_length=2)
+    country: str = Field(min_length=2, max_length=2, pattern=r"^[A-Za-z]{2}$")
     ssh: SSHRequest
 
     @field_validator("node_key", "country")
@@ -58,7 +58,7 @@ class NodeUpdateRequest(BaseModel):
     derived from the SSH-managed node installation and is an internal detail.
     """
 
-    country: str | None = Field(default=None, min_length=2, max_length=2)
+    country: str | None = Field(default=None, min_length=2, max_length=2, pattern=r"^[A-Za-z]{2}$")
     ssh: SSHRequest | None = None
 
     @field_validator("country")
@@ -143,8 +143,6 @@ def update_node(node_key: str, payload: NodeUpdateRequest, request: Request, db:
         node.country = payload.country
     if payload.ssh is not None:
         node.ssh_config_enc = encrypt_secret(json.dumps(payload.ssh.model_dump(), separators=(",", ":")))
-        # Keep the internal HTTP endpoint aligned with the SSH host. This is
-        # derived state, never operator-entered state.
         node.endpoint = f"http://{payload.ssh.host}:9100"
     record(db, user, "node.update", "node", str(node.id), request_ip(request))
     db.commit()
@@ -164,14 +162,16 @@ async def probe_node(node_key: str, db: Session = Depends(get_db)) -> dict:
     node = db.scalar(select(Node).where(Node.node_key == node_key))
     if not node:
         raise HTTPException(status_code=404, detail="node_not_found")
+    was_draining = node.status == "DRAINING"
     try:
         result = await agent_client.health(node)
-        node.status = "ONLINE"
+        node.status = "DRAINING" if was_draining else "ONLINE"
         from app.core.security import utcnow
         node.last_seen_at = utcnow()
         db.commit()
         return {"ok": True, "node_key": node.node_key, "status": node.status, "agent": result}
     except Exception as exc:
-        node.status = "OFFLINE"
+        if not was_draining:
+            node.status = "OFFLINE"
         db.commit()
         return {"ok": False, "node_key": node.node_key, "status": node.status, "error": str(exc)}

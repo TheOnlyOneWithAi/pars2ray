@@ -77,6 +77,27 @@ def _owner(user: User, sub: Subscription) -> None:
         raise HTTPException(status_code=403, detail="forbidden")
 
 
+def _enforce_node_access(user: User, sub: Subscription, node_key: str | None) -> str | None:
+    """Keep user-created direct configs inside their subscription allow-list.
+
+    Administrators may build an explicit-address config. End users and resellers
+    must select an assigned node; allowing arbitrary addresses would bypass the
+    node entitlements attached to the subscription.
+    """
+    normalized = node_key.strip().upper() if node_key else None
+    if user.role in {"SUPER_ADMIN", "ADMIN"}:
+        return normalized
+    if not normalized:
+        raise HTTPException(status_code=403, detail="node_key_required")
+    allowed = {str(key).strip().upper() for key in (sub.node_keys or []) if str(key).strip()}
+    if allowed and normalized not in allowed:
+        raise HTTPException(status_code=403, detail="node_not_assigned_to_subscription")
+    if not allowed:
+        # Empty node_keys means all managed nodes for an unlimited subscription.
+        return normalized
+    return normalized
+
+
 def _effective_entitlement(db: Session, user: User, sub: Subscription) -> None:
     if not sub.enabled or not user.is_active:
         raise HTTPException(status_code=409, detail="subscription_inactive")
@@ -186,6 +207,9 @@ async def create_direct_config(subscription_id: int, payload: DirectConfigCreate
     if not target:
         raise HTTPException(status_code=404, detail="user_not_found")
     _effective_entitlement(db, target, sub)
+    normalized_node_key = _enforce_node_access(user, sub, payload.node_key)
+    if normalized_node_key != payload.node_key:
+        payload = payload.model_copy(update={"node_key": normalized_node_key})
     raw_token = decrypt_secret(sub.token_enc) if sub.token_enc else ""
     if not raw_token:
         raise HTTPException(status_code=409, detail="subscription_token_unavailable")
@@ -204,7 +228,7 @@ async def create_direct_config(subscription_id: int, payload: DirectConfigCreate
     if len(rows) > 100:
         raise HTTPException(status_code=422, detail="too_many_direct_configs")
     _save(sub, rows)
-    record(db, user, "subscription.direct_config.create", "subscription", str(sub.id), request.client.host if request.client else "", {"protocol": effective.protocol, "name": effective.name, "ai_enabled": bool(ai_meta.get("enabled")), "address_source": row["address_source"]})
+    record(db, user, "subscription.direct_config.create", "subscription", str(sub.id), request.client.host if request.client else "", {"protocol": effective.protocol, "name": effective.name, "ai_enabled": bool(ai_meta.get("enabled")), "address_source": row["address_source"], "node_key": effective.node_key})
     db.commit()
     base = _public_subscription_base(request, db)
     origin = base.split(_subscription_path(db), 1)[0]

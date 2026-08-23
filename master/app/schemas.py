@@ -95,8 +95,10 @@ class NodeOut(ORMModel):
     memory_percent: float
     traffic_rx_bytes: int
     traffic_tx_bytes: int
+    latency_ms: float
     core: str
     core_version: str
+    agent_version: str
     capabilities: dict[str, Any]
     last_seen_at: datetime | None
     created_at: datetime
