@@ -7,12 +7,10 @@ from typing import Any
 from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, MetaData, String, Table, delete, insert, select, update
 from sqlalchemy.orm import Session
 
-
 metadata = MetaData()
 
 inbounds = Table(
-    "inbound_profiles",
-    metadata,
+    "inbound_profiles", metadata,
     Column("id", Integer, primary_key=True),
     Column("name", String(120), unique=True, nullable=False),
     Column("node_key", String(80), nullable=False, index=True),
@@ -29,8 +27,7 @@ inbounds = Table(
 )
 
 clients = Table(
-    "client_profiles",
-    metadata,
+    "client_profiles", metadata,
     Column("id", Integer, primary_key=True),
     Column("name", String(120), nullable=False),
     Column("email", String(254), nullable=True),
@@ -61,6 +58,21 @@ def select_inbound(db: Session, inbound_id: int) -> dict[str, Any] | None:
     return dict(row._mapping) if row else None
 
 
+def set_score(db: Session, inbound_id: int, score: int, selected: bool | None = None) -> dict[str, Any] | None:
+    row = select_inbound(db, inbound_id)
+    if not row:
+        return None
+    values: dict[str, Any] = {"score": max(0, min(10000, int(score)))}
+    if selected is not None:
+        values["is_selected"] = bool(selected)
+        if selected:
+            db.execute(update(inbounds).where(inbounds.c.node_key == row["node_key"]).values(is_selected=False))
+            values["status"] = "ACTIVE"
+    db.execute(update(inbounds).where(inbounds.c.id == inbound_id).values(**values))
+    db.commit()
+    return select_inbound(db, inbound_id)
+
+
 def delete_inbound(db: Session, inbound_id: int) -> bool:
     result = db.execute(delete(inbounds).where(inbounds.c.id == inbound_id))
     if not result.rowcount:
@@ -76,13 +88,7 @@ def delete_inbound(db: Session, inbound_id: int) -> bool:
 
 
 def mark_selected(db: Session, inbound_id: int) -> dict[str, Any] | None:
-    row = select_inbound(db, inbound_id)
-    if not row:
-        return None
-    db.execute(update(inbounds).values(is_selected=False).where(inbounds.c.node_key == row["node_key"]))
-    db.execute(update(inbounds).values(is_selected=True, status="ACTIVE").where(inbounds.c.id == inbound_id))
-    db.commit()
-    return select_inbound(db, inbound_id)
+    return set_score(db, inbound_id, int((select_inbound(db, inbound_id) or {}).get("score") or 0), True)
 
 
 def create_client(db: Session, name: str, email: str | None, inbound_ids: list[int]) -> dict[str, Any]:
