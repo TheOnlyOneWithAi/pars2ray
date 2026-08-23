@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from pathlib import Path
 
 CORE_SERVICES = {"xray": "xray", "sing-box": "sing-box"}
 
@@ -45,16 +44,10 @@ def logs(lines: int = 200) -> dict:
 
 
 def update() -> dict:
-    # The node agent is upgraded by the master over its authenticated SSH path.
-    # This operation refreshes the installed proxy core only when the platform
-    # package already exposes a supported updater; it never executes a remote
-    # URL or arbitrary user-provided command.
     core = next((name for name in CORE_SERVICES if shutil.which(name)), None)
     if not core:
         return {"ok": False, "reason": "no_supported_core_installed"}
-    if core == "xray":
-        return {"ok": False, "reason": "core_update_requires_managed_release"}
-    return {"ok": False, "reason": "core_update_requires_managed_release"}
+    return {"ok": False, "reason": "core_update_requires_managed_release", "core": core}
 
 
 def firewall_status() -> dict:
