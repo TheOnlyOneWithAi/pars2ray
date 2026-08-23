@@ -12,26 +12,15 @@ from app.services.ssh_provision import _client, _exec, decode_config
 
 
 async def _ssh_request(node, method: str, path: str, json_data=None):
-    """Call the node agent through the already-provisioned SSH channel."""
     if not node.ssh_config_enc:
         raise RuntimeError("node_agent_http_and_ssh_unavailable")
-
     token = decrypt_secret(node.agent_token_enc)
     config = decode_config(node.ssh_config_enc)
     payload = json.dumps(json_data or {}, separators=(",", ":"))
     remote = (
-        "export X_AGENT_TOKEN=%s; "
-        "printf '%%s' %s | "
-        "curl -fsS --connect-timeout 5 --max-time 30 "
-        "-X %s -H 'X-Agent-Token: '$X_AGENT_TOKEN "
-        "-H 'Content-Type: application/json' --data-binary @- "
-        "%s"
-    ) % (
-        shlex.quote(token),
-        shlex.quote(payload),
-        shlex.quote(method),
-        shlex.quote(f"http://127.0.0.1:9100{path}"),
-    )
+        "export X_AGENT_TOKEN=%s; printf '%%s' %s | curl -fsS --connect-timeout 5 --max-time 30 "
+        "-X %s -H 'X-Agent-Token: '$X_AGENT_TOKEN -H 'Content-Type: application/json' --data-binary @- %s"
+    ) % (shlex.quote(token), shlex.quote(payload), shlex.quote(method), shlex.quote(f"http://127.0.0.1:9100{path}"))
 
     def run():
         client = _client(config)
@@ -103,3 +92,27 @@ async def rollback(node, operation_id: str | None = None):
 
 async def restart(node):
     return await command(node, "RESTART_SERVICE")
+
+
+async def start(node):
+    return await command(node, "START_SERVICE")
+
+
+async def stop(node):
+    return await command(node, "STOP_SERVICE")
+
+
+async def version(node):
+    return await command(node, "CORE_VERSION")
+
+
+async def logs(node, lines: int = 200):
+    return await command(node, "CORE_LOGS", {"lines": lines})
+
+
+async def update_core(node):
+    return await command(node, "UPDATE_CORE")
+
+
+async def firewall_status(node):
+    return await command(node, "FIREWALL_STATUS")
