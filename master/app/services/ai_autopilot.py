@@ -56,10 +56,7 @@ def policy(db: Session) -> AIPolicy:
         enabled=values.get("ai.enabled", "false").lower() == "true",
         level=level,
         autonomous=values.get("ai.autonomous", "false").lower() == "true",
-        failover_on_iran_disconnect=values.get(
-            "ai.failover_on_iran_disconnect", "true"
-        ).lower()
-        == "true",
+        failover_on_iran_disconnect=values.get("ai.failover_on_iran_disconnect", "true").lower() == "true",
         probe_country=values.get("ai.probe_country", "IR").upper(),
         max_nodes=bounded("ai.max_nodes", 50),
         max_candidates=bounded("ai.max_candidates", 12),
@@ -77,13 +74,7 @@ def _candidate_score(node: Node, probe: dict | None) -> float:
     latency = float(data.get("latency_ms") or node.latency_ms or 9999)
     loss = float(data.get("packet_loss_percent") or 100)
     jitter = float(data.get("jitter_ms") or 9999)
-    return round(
-        base
-        + max(0.0, 100.0 - latency) * 0.35
-        + max(0.0, 100.0 - loss) * 0.45
-        + max(0.0, 50.0 - jitter) * 0.20,
-        3,
-    )
+    return round(base + max(0.0, 100.0 - latency) * 0.35 + max(0.0, 100.0 - loss) * 0.45 + max(0.0, 50.0 - jitter) * 0.20, 3)
 
 
 def _safe_port(existing: set[int], seed: int) -> int:
@@ -95,12 +86,7 @@ def _safe_port(existing: set[int], seed: int) -> int:
     raise RuntimeError("no_free_autonomous_port")
 
 
-async def run(
-    db: Session,
-    user: User | None,
-    dry_run: bool = False,
-    internal_trigger: str | None = None,
-) -> dict:
+async def run(db: Session, user: User | None, dry_run: bool = False, internal_trigger: str | None = None) -> dict:
     p = policy(db)
     trusted_internal = internal_trigger == "iran_node_disconnect"
     if not p.enabled or p.level < 4 or not p.autonomous:
@@ -114,21 +100,11 @@ async def run(
             .where(Node.status.in_(["ONLINE", "REGISTERED"]))
             .order_by(Node.score.desc())
         ).all()
-    nodes = nodes[: p.max_nodes]
+    )[: p.max_nodes]
     if not nodes:
-        return {
-            "ok": True,
-            "created": [],
-            "tested": [],
-            "probe_node": None,
-            "reason": "no_online_nodes",
-            "trigger": internal_trigger,
-        }
+        return {"ok": True, "created": [], "tested": [], "probe_node": None, "reason": "no_online_nodes", "trigger": internal_trigger}
 
-    probe_node = next(
-        (node for node in nodes if node.country.upper() == p.probe_country),
-        nodes[0],
-    )
+    probe_node = next((node for node in nodes if node.country.upper() == p.probe_country), nodes[0])
     snapshots: list[tuple[Node, dict]] = []
     for node in nodes:
         try:
@@ -136,14 +112,7 @@ async def run(
         except Exception:
             continue
     if not snapshots:
-        return {
-            "ok": True,
-            "created": [],
-            "tested": [],
-            "probe_node": probe_node.node_key,
-            "reason": "nodes_unreachable",
-            "trigger": internal_trigger,
-        }
+        return {"ok": True, "created": [], "tested": [], "probe_node": probe_node.node_key, "reason": "nodes_unreachable", "trigger": internal_trigger}
 
     existing_ports: dict[str, set[int]] = {}
     for row in list_inbounds(db):
@@ -164,11 +133,7 @@ async def run(
         if candidate["core"] == "xray" and candidate["protocol"] == "hysteria2":
             continue
         key = candidate["path"][0]
-        rank = (
-            protocol_rank.get(candidate["protocol"], 0),
-            transport_rank.get(candidate["transport"], 0),
-            candidate["core"] == "xray",
-        )
+        rank = (protocol_rank.get(candidate["protocol"], 0), transport_rank.get(candidate["transport"], 0), candidate["core"] == "xray")
         if key not in selected or rank > selected[key]["_rank"]:
             selected[key] = {**candidate, "_rank": rank}
     selected = dict(list(selected.items())[: p.max_candidates])
@@ -185,108 +150,41 @@ async def run(
         protocol = candidate["protocol"]
         transport = candidate["transport"]
         core = candidate["core"]
-        port = _safe_port(
-            existing_ports.setdefault(node.node_key, set()),
-            sum(ord(char) for char in f"{node.node_key}:{protocol}:{transport}"),
-        )
+        port = _safe_port(existing_ports.setdefault(node.node_key, set()), sum(ord(char) for char in f"{node.node_key}:{protocol}:{transport}"))
         name = f"AI-{node.node_key}-{protocol}-{transport}"[:120]
         cfg = {"port": port, "security": "none", "sniffing": True}
-        route = {
-            "name": name,
-            "tag": name,
-            "core": core,
-            "protocol": protocol,
-            "transport": transport,
-            "config": cfg,
-        }
+        route = {"name": name, "tag": name, "core": core, "protocol": protocol, "transport": transport, "config": cfg}
         try:
-            built = build_config(
-                route,
-                [{"id": "00000000-0000-4000-8000-000000000001", "email": "ai-probe"}],
-            )
+            built = build_config(route, [{"id": "00000000-0000-4000-8000-000000000001", "email": "ai-probe"}])
         except (ValueError, KeyError):
             continue
         if dry_run:
-            created.append(
-                {
-                    "node_key": node.node_key,
-                    "name": name,
-                    "protocol": protocol,
-                    "transport": transport,
-                    "core": core,
-                    "port": port,
-                    "config": built,
-                }
-            )
+            created.append({"node_key": node.node_key, "name": name, "protocol": protocol, "transport": transport, "core": core, "port": port, "config": built})
             continue
         try:
             result = await agent_client.apply_config(
                 node,
-                {
-                    "core": core,
-                    "config": built,
-                    "candidate_id": f"ai:{node.node_key}:{protocol}:{transport}:{port}",
-                    "mode": "autonomous",
-                },
+                {"core": core, "config": built, "candidate_id": f"ai:{node.node_key}:{protocol}:{transport}:{port}", "mode": "autonomous"},
             )
             if not result.get("ok"):
                 continue
             row = create_inbound(
                 db,
-                {
-                    "name": name,
-                    "node_key": node.node_key,
-                    "core": core,
-                    "protocol": protocol,
-                    "port": port,
-                    "transport": transport,
-                    "security": "none",
-                    "config_json": cfg,
-                    "score": 0,
-                    "status": "ACTIVE",
-                    "is_selected": True,
-                },
+                {"name": name, "node_key": node.node_key, "core": core, "protocol": protocol, "port": port, "transport": transport, "security": "none", "config_json": cfg, "score": 0, "status": "ACTIVE", "is_selected": True},
             )
             created.append(row)
-            probe = await agent_client.benchmark(
-                probe_node,
-                {
-                    "host": host,
-                    "port": port,
-                    "attempts": 5,
-                    "timeout_seconds": 3,
-                },
-            )
+            probe = await agent_client.benchmark(probe_node, {"host": host, "port": port, "attempts": 5, "timeout_seconds": 3})
             score = _candidate_score(node, probe)
             set_score(db, int(row["id"]), int(round(score)), True)
-            tested.append(
-                {
-                    "inbound_id": row["id"],
-                    "node_key": node.node_key,
-                    "probe_node": probe_node.node_key,
-                    "probe_country": probe_node.country,
-                    "iran_priority": probe_node.country.upper() == p.probe_country,
-                    "probe": probe,
-                    "score": score,
-                }
-            )
+            tested.append({"inbound_id": row["id"], "node_key": node.node_key, "probe_node": probe_node.node_key, "probe_country": probe_node.country, "iran_priority": probe_node.country.upper() == p.probe_country, "probe": probe, "score": score})
         except Exception:
             continue
     return {
         "ok": True,
         "dry_run": dry_run,
-        "probe_node": {
-            "node_key": probe_node.node_key,
-            "country": probe_node.country,
-            "iran_priority": probe_node.country.upper() == p.probe_country,
-        },
+        "probe_node": {"node_key": probe_node.node_key, "country": probe_node.country, "iran_priority": probe_node.country.upper() == p.probe_country},
         "created": created,
         "tested": tested,
         "trigger": internal_trigger,
-        "policy": {
-            "enabled": p.enabled,
-            "level": p.level,
-            "autonomous": p.autonomous,
-            "failover_on_iran_disconnect": p.failover_on_iran_disconnect,
-        },
+        "policy": {"enabled": p.enabled, "level": p.level, "autonomous": p.autonomous, "failover_on_iran_disconnect": p.failover_on_iran_disconnect},
     }
