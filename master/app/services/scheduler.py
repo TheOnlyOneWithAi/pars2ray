@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.base import SessionLocal
-from app.models.entities import Metric, Node, Traffic
+from app.models.entities import Metric, Node, Subscription, Traffic, User
 from app.services import agent_client
 from app.services.intelligence_cycle import run_intelligence_cycle
 from app.services.canary_executor import CanaryExecutionError, execute_canary
@@ -17,20 +17,46 @@ from app.services.national_mode import national_engine
 
 logger = logging.getLogger(__name__)
 scheduler: AsyncIOScheduler | None = None
+BYTES_PER_GB = 1024**3
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def poll_nodes() -> None:
-    """Poll every configured node and persist authoritative health/resource state.
+def _counter_delta(current: int, previous: int) -> int:
+    """Return a safe monotonic delta; a reset is treated as a new baseline."""
+    current = max(int(current), 0)
+    previous = max(int(previous), 0)
+    return current - previous if current >= previous else 0
 
-    A node's benchmark score is deliberately not recomputed from resource-only
-    telemetry: benchmark quality and liveness are different signals. Manual or
-    scheduled benchmark results own ``Node.score``; this poll only updates the
-    live health/resource counters.
+
+def _record_usage_delta(db, node: Node, delta_bytes: int) -> None:
+    """Apply node traffic deltas to every matching subscription exactly once.
+
+    ``Subscription.used_gb`` is per-subscription usage while ``User.used_gb``
+    represents the user's aggregate usage. Empty node allow-lists intentionally
+    mean all managed nodes.
     """
+    if delta_bytes <= 0:
+        return
+    delta_gb = delta_bytes / BYTES_PER_GB
+    subscriptions = db.scalars(select(Subscription).where(Subscription.enabled.is_(True))).all()
+    users_seen: set[int] = set()
+    for subscription in subscriptions:
+        allowed = {str(key).strip().upper() for key in (subscription.node_keys or []) if str(key).strip()}
+        if allowed and node.node_key.upper() not in allowed:
+            continue
+        subscription.used_gb = max(float(subscription.used_gb or 0), 0.0) + delta_gb
+        if subscription.user_id not in users_seen:
+            target = db.get(User, subscription.user_id)
+            if target is not None:
+                target.used_gb = max(float(target.used_gb or 0), 0.0) + delta_gb
+            users_seen.add(subscription.user_id)
+
+
+async def poll_nodes() -> None:
+    """Poll every configured node and persist authoritative health/resource state."""
     db = SessionLocal()
     reachable = 0
     try:
@@ -38,6 +64,8 @@ async def poll_nodes() -> None:
         now = _utcnow()
         for node in nodes:
             was_draining = node.status == "DRAINING"
+            previous_rx = max(int(node.traffic_rx_bytes or 0), 0)
+            previous_tx = max(int(node.traffic_tx_bytes or 0), 0)
             try:
                 snapshot = await agent_client.health(node)
                 metrics = await agent_client.metrics(node)
@@ -47,12 +75,14 @@ async def poll_nodes() -> None:
                 node.memory_percent = max(float(metrics.get("memory_percent", 0)), 0)
                 node.traffic_rx_bytes = max(int(metrics.get("traffic_rx_bytes", 0)), 0)
                 node.traffic_tx_bytes = max(int(metrics.get("traffic_tx_bytes", 0)), 0)
+                delta_rx = _counter_delta(node.traffic_rx_bytes, previous_rx)
+                delta_tx = _counter_delta(node.traffic_tx_bytes, previous_tx)
+                _record_usage_delta(db, node, delta_rx + delta_tx)
                 node.capabilities = snapshot.get("capabilities", {})
                 node.core = node.capabilities.get("active_core", node.core)
                 node.core_version = node.capabilities.get("core_version", node.core_version)
                 # Do not overwrite a benchmark-derived score with synthetic
-                # values based only on CPU/RAM. Keep the last authoritative
-                # benchmark score until a new benchmark is completed.
+                # values based only on CPU/RAM.
                 db.add(Metric(node_id=node.id, cpu_percent=node.cpu_percent, memory_percent=node.memory_percent, stability_percent=100))
                 db.add(Traffic(node_id=node.id, rx_bytes=node.traffic_rx_bytes, tx_bytes=node.traffic_tx_bytes))
                 reachable += 1
