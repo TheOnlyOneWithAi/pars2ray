@@ -1,0 +1,9 @@
+[Unit]
+Description=Pars2Ray automatic update check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/pars2ray/deploy/scripts/auto-update.sh
+Nice=10
