@@ -29,17 +29,14 @@ ensure_auto_update(){
   install -d -m 0755 /etc/systemd/system
   install -m 0644 "$source_service" /etc/systemd/system/pars2ray-auto-update.service
   install -m 0644 "$source_timer" /etc/systemd/system/pars2ray-auto-update.timer
+  sed -i "s#/opt/pars2ray#${INSTALL_DIR}#g" /etc/systemd/system/pars2ray-auto-update.service
   systemctl daemon-reload
   systemctl enable --now pars2ray-auto-update.timer >/dev/null
 }
 
 runtime_python(){ [[ -x "$INSTALL_DIR/.venv/bin/python" ]] || fail "Pars2Ray Python environment not found"; printf '%s' "$INSTALL_DIR/.venv/bin/python"; }
 
-restart_services(){
-  systemctl daemon-reload
-  systemctl restart pars2ray-master.service
-  systemctl restart pars2ray-worker.service
-}
+restart_services(){ systemctl daemon-reload; systemctl restart pars2ray-master.service; systemctl restart pars2ray-worker.service; }
 
 wait_health(){
   local port="${PANEL_HTTP_PORT:-8000}" i
@@ -76,9 +73,7 @@ change_password(){
   load_env
   local user="${ADMIN_USER:-}" password confirm
   [[ -n "$user" ]] || fail "ADMIN_USER is not configured"
-  if [[ -n "${PARS2RAY_NEW_PASSWORD:-}" ]]; then
-    password="$PARS2RAY_NEW_PASSWORD"
-  else
+  if [[ -n "${PARS2RAY_NEW_PASSWORD:-}" ]]; then password="$PARS2RAY_NEW_PASSWORD"; else
     while :; do
       read -r -s -p "New Pars2Ray panel password for ${user} (12+ chars): " password || true; printf '\n'
       (( ${#password} >= 12 )) || { echo "[pars2ray] Password must be at least 12 characters." >&2; continue; }
@@ -88,10 +83,7 @@ change_password(){
     done
   fi
   (( ${#password} >= 12 )) || fail "Password must be at least 12 characters"
-
-  local old_password="${ADMIN_PASSWORD:-}"
-  [[ -n "$old_password" ]] || fail "ADMIN_PASSWORD is not configured"
-
+  local old_password="${ADMIN_PASSWORD:-}"; [[ -n "$old_password" ]] || fail "ADMIN_PASSWORD is not configured"
   echo "[pars2ray] Updating the panel password..."
   PARS2RAY_TARGET_USER="$user" PARS2RAY_NEW_PASSWORD="$password" PYTHONPATH="$INSTALL_DIR/master" "$(runtime_python)" - <<'PY'
 import os
@@ -99,32 +91,20 @@ from sqlalchemy import select
 from app.core.security import hash_password, verify_password
 from app.db.base import SessionLocal
 from app.models.entities import User
-u=os.environ['PARS2RAY_TARGET_USER']; p=os.environ['PARS2RAY_NEW_PASSWORD']
-db=SessionLocal()
+u=os.environ['PARS2RAY_TARGET_USER']; p=os.environ['PARS2RAY_NEW_PASSWORD']; db=SessionLocal()
 try:
     user=db.scalar(select(User).where(User.username==u))
     if user is None: raise RuntimeError(f'user not found: {u}')
     h=hash_password(p)
     if not verify_password(p,h): raise RuntimeError('new hash self-verification failed')
-    user.password_hash=h
-    user.is_active=True
-    db.commit()
-    db.expire_all()
+    user.password_hash=h; user.is_active=True; db.commit(); db.expire_all()
     check=db.scalar(select(User).where(User.username==u))
     if check is None or not verify_password(p,check.password_hash): raise RuntimeError('database verification failed after commit')
-finally:
-    db.close()
+finally: db.close()
 PY
-
-  local tmp="${ENV_FILE}.tmp.$$"
-  awk -v v="$password" 'BEGIN{done=0} /^ADMIN_PASSWORD=/{if(!done){print "ADMIN_PASSWORD=" v;done=1};next} {print} END{if(!done)print "ADMIN_PASSWORD=" v}' "$ENV_FILE" > "$tmp"
-  chmod 0600 "$tmp"; mv -f "$tmp" "$ENV_FILE"
-
+  local tmp="${ENV_FILE}.tmp.$$"; awk -v v="$password" 'BEGIN{done=0} /^ADMIN_PASSWORD=/{if(!done){print "ADMIN_PASSWORD=" v;done=1};next} {print} END{if(!done)print "ADMIN_PASSWORD=" v}' "$ENV_FILE" > "$tmp"; chmod 0600 "$tmp"; mv -f "$tmp" "$ENV_FILE"
   if [[ -f "$CREDENTIALS_FILE" ]]; then
-    local panel host port
-    panel="$(grep '^Panel: ' "$CREDENTIALS_FILE" || true)"
-    host="$(printf '%s\n' "$panel" | sed -n 's#^Panel: http://\([^:]*\):.*#\1#p')"
-    port="$(printf '%s\n' "$panel" | sed -n 's#^Panel: .*:\([0-9][0-9]*\)$#\1#p')"
+    local panel host port; panel="$(grep '^Panel: ' "$CREDENTIALS_FILE" || true)"; host="$(printf '%s\n' "$panel" | sed -n 's#^Panel: http://\([^:]*\):.*#\1#p')"; port="$(printf '%s\n' "$panel" | sed -n 's#^Panel: .*:\([0-9][0-9]*\)$#\1#p')"
     cat > "$CREDENTIALS_FILE" <<EOF
 Pars2Ray installation
 =====================
@@ -136,11 +116,8 @@ Keep this file private. It is readable only by root.
 EOF
     chmod 0600 "$CREDENTIALS_FILE"
   fi
-
   restart_services
-  if ! wait_health; then
-    fail "Panel did not become healthy after password change"
-  fi
+  wait_health || fail "Panel did not become healthy after password change"
   if ! verify_live_login "$user" "$password"; then
     echo "[pars2ray] Live panel rejected the new password; restoring the previous password..." >&2
     PARS2RAY_TARGET_USER="$user" PARS2RAY_NEW_PASSWORD="$old_password" PYTHONPATH="$INSTALL_DIR/master" "$(runtime_python)" - <<'PY'
@@ -149,32 +126,21 @@ from sqlalchemy import select
 from app.core.security import hash_password
 from app.db.base import SessionLocal
 from app.models.entities import User
-u=os.environ['PARS2RAY_TARGET_USER']; p=os.environ['PARS2RAY_NEW_PASSWORD']
-db=SessionLocal()
+u=os.environ['PARS2RAY_TARGET_USER']; p=os.environ['PARS2RAY_NEW_PASSWORD']; db=SessionLocal()
 try:
     user=db.scalar(select(User).where(User.username==u))
-    if user is not None:
-        user.password_hash=hash_password(p); db.commit()
+    if user is not None: user.password_hash=hash_password(p); db.commit()
 finally: db.close()
 PY
-    local tmp2="${ENV_FILE}.tmp.$$"
-    awk -v v="$old_password" 'BEGIN{done=0} /^ADMIN_PASSWORD=/{if(!done){print "ADMIN_PASSWORD=" v;done=1};next} {print} END{if(!done)print "ADMIN_PASSWORD=" v}' "$ENV_FILE" > "$tmp2"
-    chmod 0600 "$tmp2"; mv -f "$tmp2" "$ENV_FILE"
-    restart_services || true
+    local tmp2="${ENV_FILE}.tmp.$$"; awk -v v="$old_password" 'BEGIN{done=0} /^ADMIN_PASSWORD=/{if(!done){print "ADMIN_PASSWORD=" v;done=1};next} {print} END{if(!done)print "ADMIN_PASSWORD=" v}' "$ENV_FILE" > "$tmp2"; chmod 0600 "$tmp2"; mv -f "$tmp2" "$ENV_FILE"; restart_services || true
     fail "Live panel rejected the new password; change was rolled back"
   fi
   echo "[pars2ray] Password changed successfully. Live login verification passed."
 }
 
 diagnose_auth(){
-  load_env
-  local user="${ADMIN_USER:-}" port="${PANEL_HTTP_PORT:-8000}"
-  [[ -n "$user" ]] || fail "ADMIN_USER is not configured"
-  echo "[pars2ray] Authentication diagnostics"
-  echo "  user: $user"
-  echo "  database: $(printf '%s' "${DATABASE_URL:-}" | sha256sum | cut -c1-12)"
-  echo "  master: $(systemctl is-active pars2ray-master.service 2>/dev/null || true)"
-  echo "  panel: http://127.0.0.1:${port}"
+  load_env; local user="${ADMIN_USER:-}" port="${PANEL_HTTP_PORT:-8000}"; [[ -n "$user" ]] || fail "ADMIN_USER is not configured"
+  echo "[pars2ray] Authentication diagnostics"; echo "  user: $user"; echo "  database: $(printf '%s' "${DATABASE_URL:-}" | sha256sum | cut -c1-12)"; echo "  master: $(systemctl is-active pars2ray-master.service 2>/dev/null || true)"; echo "  panel: http://127.0.0.1:${port}"
   PYTHONPATH="$INSTALL_DIR/master" "$(runtime_python)" - <<'PY'
 from sqlalchemy import select
 from app.core.config import settings
@@ -190,14 +156,7 @@ PY
 }
 
 update(){
-  [[ -x "$INSTALL_DIR/deploy/install.sh" ]] || fail "Installer not found: $INSTALL_DIR/deploy/install.sh"
-  load_env
-  local configured_port="${PANEL_HTTP_PORT:-}"
-  [[ -n "$configured_port" ]] || fail "PANEL_HTTP_PORT is not configured in $ENV_FILE"
-  export PANEL_HTTP_PORT="$configured_port"
-  export PARS2RAY_NONINTERACTIVE=1
-  echo "[pars2ray] Updating Pars2Ray using existing panel port ${PANEL_HTTP_PORT}..."
-  exec env PANEL_HTTP_PORT="$PANEL_HTTP_PORT" PARS2RAY_NONINTERACTIVE=1 bash "$INSTALL_DIR/deploy/install.sh"
+  [[ -x "$INSTALL_DIR/deploy/install.sh" ]] || fail "Installer not found: $INSTALL_DIR/deploy/install.sh"; load_env; local configured_port="${PANEL_HTTP_PORT:-}"; [[ -n "$configured_port" ]] || fail "PANEL_HTTP_PORT is not configured in $ENV_FILE"; export PANEL_HTTP_PORT="$configured_port"; export PARS2RAY_NONINTERACTIVE=1; echo "[pars2ray] Updating Pars2Ray using existing panel port ${PANEL_HTTP_PORT}..."; exec env PANEL_HTTP_PORT="$PANEL_HTTP_PORT" PARS2RAY_NONINTERACTIVE=1 bash "$INSTALL_DIR/deploy/install.sh"
 }
 
 case "${1:-help}" in
