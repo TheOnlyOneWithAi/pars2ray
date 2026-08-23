@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 
-SUPPORTED_PROTOCOLS = ["vless", "trojan", "shadowsocks"]
-SUPPORTED_TRANSPORTS = ["tcp", "grpc", "websocket", "httpupgrade", "xhttp"]
+SUPPORTED_PROTOCOLS = ["vless", "vmess", "trojan", "shadowsocks", "http", "socks", "dokodemo-door", "wireguard", "tun"]
+SUPPORTED_SINGBOX_PROTOCOLS = ["vless", "vmess", "trojan", "shadowsocks", "hysteria2"]
+SUPPORTED_TRANSPORTS = ["tcp", "grpc", "websocket", "httpupgrade", "xhttp", "quic", "kcp"]
 SUPPORTED_CORES = ["xray", "sing-box"]
 
 
@@ -15,18 +16,16 @@ def make_id(obj: dict) -> str:
 def generate(nodes: list[str], max_candidates: int = 30, allow_experimental: bool = False) -> list[dict]:
     if max_candidates <= 0 or not nodes:
         return []
-
     clean_nodes = list(dict.fromkeys(str(node).strip() for node in nodes if str(node).strip()))
     if not clean_nodes:
         return []
-
     transports = SUPPORTED_TRANSPORTS if allow_experimental else ["tcp", "grpc", "xhttp"]
     out: list[dict] = []
     seen: set[str] = set()
-
     for node in clean_nodes:
         for core in SUPPORTED_CORES:
-            for protocol in SUPPORTED_PROTOCOLS:
+            protocols = SUPPORTED_SINGBOX_PROTOCOLS if core == "sing-box" else SUPPORTED_PROTOCOLS
+            for protocol in protocols:
                 for transport in transports:
                     candidate = {"path": [node], "core": core, "protocol": protocol, "transport": transport, "settings": {}}
                     candidate_id = make_id(candidate)
