@@ -11,7 +11,6 @@ from app.core.config import settings
 from app.db.base import SessionLocal
 from app.models.entities import Metric, Node, Traffic
 from app.services import agent_client
-from app.services.benchmark import score_measurement
 from app.services.intelligence_cycle import run_intelligence_cycle
 from app.services.canary_executor import CanaryExecutionError, execute_canary
 from app.services.national_mode import national_engine
@@ -54,14 +53,7 @@ async def poll_nodes() -> None:
                 # Do not overwrite a benchmark-derived score with synthetic
                 # values based only on CPU/RAM. Keep the last authoritative
                 # benchmark score until a new benchmark is completed.
-                db.add(
-                    Metric(
-                        node_id=node.id,
-                        cpu_percent=node.cpu_percent,
-                        memory_percent=node.memory_percent,
-                        stability_percent=100,
-                    )
-                )
+                db.add(Metric(node_id=node.id, cpu_percent=node.cpu_percent, memory_percent=node.memory_percent, stability_percent=100))
                 db.add(Traffic(node_id=node.id, rx_bytes=node.traffic_rx_bytes, tx_bytes=node.traffic_tx_bytes))
                 reachable += 1
             except Exception:
