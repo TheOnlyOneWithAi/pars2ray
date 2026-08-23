@@ -23,7 +23,11 @@ def _node(node_key: str, db: Session) -> Node:
 
 async def _action(node: Node, action: str, payload: dict | None = None) -> dict:
     try:
-        return await getattr(agent_client, action)(node, **({"payload": payload} if action == "benchmark" else {})) if action == "benchmark" else await getattr(agent_client, action)(node, **({"lines": int(payload.get("lines", 200))} if action == "logs" else {}))
+        if action == "benchmark":
+            return await agent_client.benchmark(node, payload or {})
+        if action == "logs":
+            return await agent_client.logs(node, int((payload or {}).get("lines", 200)))
+        return await getattr(agent_client, action)(node)
     except Exception as exc:
         node.status = "OFFLINE"
         raise HTTPException(status_code=502, detail="node_unreachable") from exc
