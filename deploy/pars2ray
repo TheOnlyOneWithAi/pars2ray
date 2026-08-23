@@ -19,6 +19,20 @@ load_env(){
   set +a
 }
 
+ensure_auto_update(){
+  local enabled="${PARS2RAY_AUTO_UPDATE_ENABLED:-1}"
+  [[ "$enabled" == "1" ]] || return 0
+  local source_service="$INSTALL_DIR/deploy/systemd/pars2ray-auto-update.service"
+  local source_timer="$INSTALL_DIR/deploy/systemd/pars2ray-auto-update.timer"
+  local source_script="$INSTALL_DIR/deploy/scripts/auto-update.sh"
+  [[ -f "$source_service" && -f "$source_timer" && -f "$source_script" ]] || { echo "[pars2ray] automatic updater files are missing; skipping timer setup" >&2; return 0; }
+  install -d -m 0755 /etc/systemd/system
+  install -m 0644 "$source_service" /etc/systemd/system/pars2ray-auto-update.service
+  install -m 0644 "$source_timer" /etc/systemd/system/pars2ray-auto-update.timer
+  systemctl daemon-reload
+  systemctl enable --now pars2ray-auto-update.timer >/dev/null
+}
+
 runtime_python(){ [[ -x "$INSTALL_DIR/.venv/bin/python" ]] || fail "Pars2Ray Python environment not found"; printf '%s' "$INSTALL_DIR/.venv/bin/python"; }
 
 restart_services(){
@@ -199,9 +213,9 @@ case "${1:-help}" in
   worker-logs) journalctl -u pars2ray-worker.service --no-pager -n "${PARS2RAY_LOG_LINES:-150}" ;;
   config) load_env; sed -E 's/^(ADMIN_PASSWORD|JWT_SECRET|MASTER_SECRET)=.*/\1=***REDACTED***/' "$ENV_FILE" ;;
   install|reinstall) exec bash "$INSTALL_DIR/deploy/install.sh" ;;
+  uninstall) systemctl disable --now pars2ray-auto-update.timer pars2ray-worker.service pars2ray-master.service 2>/dev/null || true; rm -f /etc/systemd/system/pars2ray-auto-update.timer /etc/systemd/system/pars2ray-auto-update.service /etc/systemd/system/pars2ray-master.service /etc/systemd/system/pars2ray-worker.service "$CLI_PATH"; systemctl daemon-reload; echo "[pars2ray] Services removed; project files remain in $INSTALL_DIR." ;;
   shell) exec bash ;;
-  uninstall) systemctl disable --now pars2ray-worker.service pars2ray-master.service 2>/dev/null || true; rm -f /etc/systemd/system/pars2ray-master.service /etc/systemd/system/pars2ray-worker.service "$CLI_PATH"; systemctl daemon-reload; echo "[pars2ray] Services removed; project files remain in $INSTALL_DIR." ;;
-  help|-h|--help) cat <<'EOF'
+  help|-h|--help) ensure_auto_update; cat <<'EOF'
 Pars2Ray management CLI
 
   update             Run the complete native installer/update using the saved panel port
