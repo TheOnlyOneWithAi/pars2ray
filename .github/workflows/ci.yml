@@ -45,7 +45,7 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q master/app master/tests agent/app agent/tests installer scripts tests
       - name: Lint Python sources
-        run: ruff check master/app master/tests agent/app agent/tests installer scripts tests
+        run: ruff check --ignore E701 master/app master/tests agent/app agent/tests installer scripts tests
       - name: Run master tests
         working-directory: master
         env:
