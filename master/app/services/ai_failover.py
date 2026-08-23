@@ -11,19 +11,15 @@ logger = logging.getLogger(__name__)
 
 
 async def on_iran_node_disconnect(db: Session, node: Node) -> dict:
-    """Build fallback inbounds after an Iranian node loses master access.
-
-    The scheduler calls this only for an ONLINE/REGISTERED -> OFFLINE edge.
-    The disconnected node is never selected as a deployment target. A different
-    reachable Iranian node remains the preferred benchmark source; otherwise
-    the best reachable managed node becomes the temporary probe.
-    """
+    """Build fallback inbounds after an Iranian node loses master access."""
     if node.country.upper() != "IR":
         return {"triggered": False, "reason": "not_iran_node"}
 
     current = policy(db)
-    if current.level < 4 or not current.autonomous:
+    if not current.enabled or current.level < 4 or not current.autonomous:
         return {"triggered": False, "reason": "ai_autonomous_mode_disabled"}
+    if not current.failover_on_iran_disconnect:
+        return {"triggered": False, "reason": "iran_failover_disabled"}
 
     logger.warning(
         "Iran node %s lost master connectivity; autonomous AI failover starting",
