@@ -12,6 +12,7 @@ from sqlalchemy import text
 from starlette.responses import PlainTextResponse
 
 from app.api.advanced_control import router as advanced_control_router
+from app.api.admin_settings import router as admin_settings_router
 from app.api.ai_autopilot import router as ai_autopilot_router
 from app.api.ai_config import router as ai_config_router
 from app.api.client_manager import router as client_manager_router
@@ -121,6 +122,7 @@ def readiness() -> Response:
 
 app.include_router(user_provisioning_router)
 app.include_router(ai_settings_router)
+app.include_router(admin_settings_router)
 app.include_router(ai_config_router)
 app.include_router(ai_autopilot_router)
 app.include_router(advanced_control_router)
