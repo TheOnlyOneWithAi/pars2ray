@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import request_ip, require_roles
 from app.core.security import encrypt_secret, random_token, token_hash, utcnow
 from app.db.base import get_db
-from app.models.entities import Plan, Subscription, User
+from app.models.entities import Node, Plan, Subscription, User
 from app.schemas import ClientCreate, ClientOut, ClientUpdate
 from app.services.audit import record
 
@@ -39,6 +39,24 @@ def _get_client(db: Session, client_id: int) -> Subscription:
     if not client:
         raise HTTPException(status_code=404, detail="client_not_found")
     return client
+
+
+def _normalize_node_keys(db: Session, node_keys: list[str]) -> list[str]:
+    """Normalize and verify every assigned node exists.
+
+    An empty list deliberately means "all nodes" for backwards-compatible
+    unlimited subscriptions; a non-empty list is an explicit allow-list.
+    """
+    normalized = list(dict.fromkeys(key.strip().upper() for key in node_keys if key.strip()))
+    if len(normalized) > 20:
+        raise HTTPException(status_code=422, detail="too_many_nodes")
+    if not normalized:
+        return []
+    known = set(db.scalars(select(Node.node_key).where(Node.node_key.in_(normalized))).all())
+    missing = sorted(set(normalized) - known)
+    if missing:
+        raise HTTPException(status_code=422, detail={"code": "unknown_nodes", "nodes": missing})
+    return normalized
 
 
 def _effective_quota(user: User | None, client: Subscription, plan: Plan | None) -> float:
@@ -126,9 +144,7 @@ def create_client(payload: ClientCreate, request: Request, db: Session = Depends
         raise HTTPException(status_code=409, detail="active_client_exists")
     if plan is not None:
         _ensure_plan_capacity(db, target.id, plan)
-    node_keys = list(dict.fromkeys(key.strip().upper() for key in payload.node_keys if key.strip()))
-    if len(node_keys) > 20:
-        raise HTTPException(status_code=422, detail="too_many_nodes")
+    node_keys = _normalize_node_keys(db, payload.node_keys)
     expires_at = _resolve_expiry(payload, target, plan)
     if expires_at is not None and expires_at <= utcnow():
         raise HTTPException(status_code=422, detail="expires_at_must_be_future")
@@ -171,10 +187,7 @@ def update_client(client_id: int, payload: ClientUpdate, request: Request, db: S
             _ensure_plan_capacity(db, client.user_id, plan, exclude_id=client.id)
         client.plan_id = plan.id
     if payload.node_keys is not None:
-        keys = list(dict.fromkeys(key.strip().upper() for key in payload.node_keys if key.strip()))
-        if len(keys) > 20:
-            raise HTTPException(status_code=422, detail="too_many_nodes")
-        client.node_keys = keys
+        client.node_keys = _normalize_node_keys(db, payload.node_keys)
     if payload.quota_gb is not None and client.plan_id is None and target is not None:
         target.quota_gb = float(payload.quota_gb)
     if payload.duration_days is not None:
