@@ -23,6 +23,19 @@ COUNTRY = os.getenv("COUNTRY", "")
 AGENT_TOKEN = os.getenv("AGENT_TOKEN", "")
 app = FastAPI(title=f"Pars2Ray Node Agent {NODE_KEY}", version=AGENT_VERSION, docs_url=None, redoc_url=None, openapi_url=None)
 
+PROTOCOLS = ["vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria2", "http", "socks", "dokodemo-door", "tunnel", "tun", "mixed", "mtproto"]
+TRANSPORTS = ["tcp", "kcp", "websocket", "grpc", "httpupgrade", "xhttp", "quic"]
+SECURITY = ["none", "tls", "reality", "xtls"]
+
+
+def enriched_capability() -> dict:
+    result = dict(capability())
+    result["protocols"] = PROTOCOLS
+    result["transports"] = TRANSPORTS
+    result["security"] = SECURITY
+    result["features"] = {"fallbacks": True, "routing": True, "balancers": True, "outbounds": True, "sniffing": True, "mux": True, "reality": True, "xtls": True, "wireguard": True, "hysteria2": True, "tun": True, "mtproto": True, "firewall": True}
+    return result
+
 
 def authorize(token: str | None) -> None:
     if not AGENT_TOKEN or not token or not hmac.compare_digest(token, AGENT_TOKEN):
@@ -37,7 +50,7 @@ def health() -> dict:
 @app.get("/heartbeat")
 def heartbeat(x_agent_token: str | None = Header(default=None)) -> dict:
     authorize(x_agent_token)
-    return {"ok": True, "node_key": NODE_KEY, "timestamp": int(time.time()), "capabilities": capability()}
+    return {"ok": True, "node_key": NODE_KEY, "timestamp": int(time.time()), "capabilities": enriched_capability()}
 
 
 @app.get("/metrics")
@@ -50,7 +63,7 @@ def metrics(x_agent_token: str | None = Header(default=None)) -> dict:
 @app.get("/capabilities")
 def capabilities(x_agent_token: str | None = Header(default=None)) -> dict:
     authorize(x_agent_token)
-    return capability()
+    return enriched_capability()
 
 
 class BenchmarkRequest(BaseModel):
@@ -146,7 +159,7 @@ class CommandRequest(BaseModel):
 def command(request: CommandRequest, x_agent_token: str | None = Header(default=None)) -> dict:
     authorize(x_agent_token)
     if request.command == Command.GET_STATUS:
-        return {"ok": True, "status": health(), "capabilities": capability()}
+        return {"ok": True, "status": health(), "capabilities": enriched_capability()}
     if request.command == Command.GET_METRICS:
         return metrics(x_agent_token)
     if request.command == Command.GET_CORE_STATUS:
