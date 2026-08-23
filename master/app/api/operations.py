@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles, request_ip
 from app.core.security import decrypt_secret
-from app.db.base import Base, get_db
+from app.db.base import get_db
 from app.models.entities import SystemSetting, User
 from app.services.audit import record
 
@@ -48,7 +48,7 @@ def export_backup(request: Request, db: Session = Depends(get_db), user: User = 
     inspector = inspect(db.bind)
     tables: dict[str, list[dict[str, Any]]] = {}
     for table in sorted(inspector.get_table_names()):
-        # Table names originate exclusively from SQLAlchemy's inspected schema, never user input.
+        # Schema identifiers are obtained from SQLAlchemy inspection, never request input.
         rows = db.execute(text(f'SELECT * FROM "{table}"'))  # nosec B608
         tables[table] = [_jsonable(dict(row)) for row in rows.mappings().all()]
     payload = {
@@ -117,7 +117,8 @@ def telegram_test(payload: dict[str, Any], request: Request, db: Session = Depen
     message = str(payload.get("message") or "Pars2Ray Telegram test").strip()
     if not token or not chat_id or not message or len(message) > 4096:
         raise HTTPException(status_code=422, detail="invalid_telegram_test")
-    url = f"https://api.telegram.org/bot{urllib.parse.quote(token, safe='')} /sendMessage".replace(" ", "")
+    token_path = urllib.parse.quote(token, safe="")
+    url = f"https://api.telegram.org/bot{token_path}/sendMessage"
     data = urllib.parse.urlencode({"chat_id": chat_id, "text": message}).encode()
     try:
         request_obj = urllib.request.Request(url, data=data, method="POST")
