@@ -9,6 +9,7 @@ from app.api.deps import current_user, request_ip, require_roles
 from app.db.base import get_db
 from app.models.entities import Node, User
 from app.services import agent_client
+from app.services.ai_autopilot import policy
 from app.services.audit import record
 from app.services.openai_inbound_optimizer import suggest
 
@@ -23,6 +24,8 @@ class ConfigureNodeRequest(BaseModel):
 
 @router.post("/configure-node", dependencies=[Depends(require_roles("SUPER_ADMIN", "ADMIN", "OPERATOR"))])
 async def configure_node(payload: ConfigureNodeRequest, request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
+    if policy(db).level < 2:
+        raise HTTPException(status_code=403, detail="ai_permission_level_too_low_for_inbound_management")
     node = db.scalar(select(Node).where(Node.node_key == payload.node_key.upper()))
     if not node:
         raise HTTPException(status_code=404, detail="node_not_found")
