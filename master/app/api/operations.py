@@ -90,7 +90,7 @@ async def restore_backup(request: Request, file: UploadFile = File(...), db: Ses
             quoted = ", ".join(f'"{n}"' for n in names)
             placeholders = ", ".join(f":p{i}" for i in range(len(names)))
             db.execute(  # nosec B608
-                text(f'INSERT INTO "{table}" ({quoted}) VALUES ({placeholders})'),
+                text(f'INSERT INTO "{table}" ({quoted}) VALUES ({placeholders})'),  # nosec B608 - identifiers come only from SQLAlchemy inspection; values are bound parameters
                 {f"p{i}": values[n] for i, n in enumerate(names)},
             )
             restored += 1
