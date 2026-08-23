@@ -11,15 +11,12 @@ logger = logging.getLogger(__name__)
 
 
 async def on_iran_node_disconnect(db: Session, node: Node) -> dict:
-    """Build a fallback inbound set when an Iranian management node drops.
+    """Build fallback inbounds after an Iranian node loses master access.
 
-    The trigger is edge-based: callers invoke this only on ONLINE/REGISTERED ->
-    OFFLINE transitions, so an already-offline node cannot repeatedly trigger
-    autonomous changes every polling cycle.
-
-    The disconnected node is never selected as a deployment target. If another
-    reachable Iranian node exists it remains the preferred benchmark source;
-    otherwise the best reachable managed node becomes the temporary probe.
+    The scheduler calls this only for an ONLINE/REGISTERED -> OFFLINE edge.
+    The disconnected node is never selected as a deployment target. A different
+    reachable Iranian node remains the preferred benchmark source; otherwise
+    the best reachable managed node becomes the temporary probe.
     """
     if node.country.upper() != "IR":
         return {"triggered": False, "reason": "not_iran_node"}
@@ -32,7 +29,12 @@ async def on_iran_node_disconnect(db: Session, node: Node) -> dict:
         "Iran node %s lost master connectivity; autonomous AI failover starting",
         node.node_key,
     )
-    result = await run(db, None, dry_run=False)
+    result = await run(
+        db,
+        None,
+        dry_run=False,
+        internal_trigger="iran_node_disconnect",
+    )
     return {
         "triggered": True,
         "reason": "iran_node_disconnected",
