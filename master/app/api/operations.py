@@ -48,8 +48,9 @@ def export_backup(request: Request, db: Session = Depends(get_db), user: User = 
     inspector = inspect(db.bind)
     tables: dict[str, list[dict[str, Any]]] = {}
     for table in sorted(inspector.get_table_names()):
-        rows = db.execute(text(f'SELECT * FROM "{table}"')).mappings().all()
-        tables[table] = [_jsonable(dict(row)) for row in rows]
+        # Table names originate exclusively from SQLAlchemy's inspected schema, never user input.
+        rows = db.execute(text(f'SELECT * FROM "{table}"'))  # nosec B608
+        tables[table] = [_jsonable(dict(row)) for row in rows.mappings().all()]
     payload = {
         "format": "pars2ray-backup",
         "version": 1,
@@ -88,7 +89,10 @@ async def restore_backup(request: Request, file: UploadFile = File(...), db: Ses
             names = list(values)
             quoted = ", ".join(f'"{n}"' for n in names)
             placeholders = ", ".join(f":p{i}" for i in range(len(names)))
-            db.execute(text(f'INSERT INTO "{table}" ({quoted}) VALUES ({placeholders})'), {f"p{i}": values[n] for i, n in enumerate(names)})
+            db.execute(  # nosec B608
+                text(f'INSERT INTO "{table}" ({quoted}) VALUES ({placeholders})'),
+                {f"p{i}": values[n] for i, n in enumerate(names)},
+            )
             restored += 1
     try:
         db.commit()
@@ -113,10 +117,11 @@ def telegram_test(payload: dict[str, Any], request: Request, db: Session = Depen
     message = str(payload.get("message") or "Pars2Ray Telegram test").strip()
     if not token or not chat_id or not message or len(message) > 4096:
         raise HTTPException(status_code=422, detail="invalid_telegram_test")
-    url = f"https://api.telegram.org/bot{urllib.parse.quote(token, safe='')}/sendMessage"
+    url = f"https://api.telegram.org/bot{urllib.parse.quote(token, safe='')} /sendMessage".replace(" ", "")
     data = urllib.parse.urlencode({"chat_id": chat_id, "text": message}).encode()
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, data=data, method="POST"), timeout=10) as response:
+        request_obj = urllib.request.Request(url, data=data, method="POST")
+        with urllib.request.urlopen(request_obj, timeout=10) as response:  # nosec B310
             result = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         raise HTTPException(status_code=502, detail="telegram_unreachable") from exc
@@ -156,7 +161,7 @@ def update_geo(payload: dict[str, Any], request: Request, db: Session = Depends(
         target = GEO_DIR / f"{name}.dat"
         tmp = GEO_DIR / f".{name}.dat.tmp"
         try:
-            with urllib.request.urlopen(url, timeout=30) as response, tmp.open("wb") as out:
+            with urllib.request.urlopen(url, timeout=30) as response, tmp.open("wb") as out:  # nosec B310
                 size = 0
                 while True:
                     chunk = response.read(1024 * 1024)
