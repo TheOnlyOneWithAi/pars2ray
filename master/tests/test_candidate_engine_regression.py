@@ -31,4 +31,4 @@ def test_experimental_transport_switch_is_explicit():
     stable_transports = {candidate["transport"] for candidate in stable}
     experimental_transports = {candidate["transport"] for candidate in experimental}
     assert stable_transports == {"tcp", "grpc", "xhttp"}
-    assert experimental_transports == {"tcp", "grpc", "websocket", "httpupgrade", "xhttp"}
+    assert experimental_transports == {"tcp", "grpc", "websocket", "httpupgrade", "xhttp", "quic", "kcp"}
