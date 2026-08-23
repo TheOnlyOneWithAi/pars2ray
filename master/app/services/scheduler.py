@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
@@ -25,31 +25,47 @@ def _utcnow() -> datetime:
 
 
 async def poll_nodes() -> None:
-    """Poll every configured node and persist an authoritative health state."""
+    """Poll every configured node and persist authoritative health/resource state.
+
+    A node's benchmark score is deliberately not recomputed from resource-only
+    telemetry: benchmark quality and liveness are different signals. Manual or
+    scheduled benchmark results own ``Node.score``; this poll only updates the
+    live health/resource counters.
+    """
     db = SessionLocal()
     reachable = 0
     try:
         nodes = db.scalars(select(Node)).all()
         now = _utcnow()
         for node in nodes:
+            was_draining = node.status == "DRAINING"
             try:
                 snapshot = await agent_client.health(node)
                 metrics = await agent_client.metrics(node)
-                node.status = "ONLINE"
+                node.status = "DRAINING" if was_draining else "ONLINE"
                 node.last_seen_at = now
-                node.cpu_percent = float(metrics.get("cpu_percent", 0))
-                node.memory_percent = float(metrics.get("memory_percent", 0))
+                node.cpu_percent = max(float(metrics.get("cpu_percent", 0)), 0)
+                node.memory_percent = max(float(metrics.get("memory_percent", 0)), 0)
                 node.traffic_rx_bytes = max(int(metrics.get("traffic_rx_bytes", 0)), 0)
                 node.traffic_tx_bytes = max(int(metrics.get("traffic_tx_bytes", 0)), 0)
                 node.capabilities = snapshot.get("capabilities", {})
                 node.core = node.capabilities.get("active_core", node.core)
                 node.core_version = node.capabilities.get("core_version", node.core_version)
-                node.score = score_measurement(0, 0, 0, 100, 0, node.cpu_percent, node.memory_percent)
-                db.add(Metric(node_id=node.id, cpu_percent=node.cpu_percent, memory_percent=node.memory_percent, stability_percent=100))
+                # Do not overwrite a benchmark-derived score with synthetic
+                # values based only on CPU/RAM. Keep the last authoritative
+                # benchmark score until a new benchmark is completed.
+                db.add(
+                    Metric(
+                        node_id=node.id,
+                        cpu_percent=node.cpu_percent,
+                        memory_percent=node.memory_percent,
+                        stability_percent=100,
+                    )
+                )
                 db.add(Traffic(node_id=node.id, rx_bytes=node.traffic_rx_bytes, tx_bytes=node.traffic_tx_bytes))
                 reachable += 1
             except Exception:
-                if node.status != "DRAINING":
+                if not was_draining:
                     node.status = "OFFLINE"
         state = national_engine.update_connectivity(db, foreign_reachable=(reachable > 0 or not nodes))
         state.ai_status = "READY" if settings.ai_enabled and settings.openai_api_key else "DISABLED"
@@ -99,6 +115,7 @@ def start_scheduler() -> None:
         replace_existing=True,
         coalesce=True,
         max_instances=1,
+        misfire_grace_time=30,
     )
     scheduler.start()
 
