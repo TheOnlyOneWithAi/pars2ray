@@ -1,4 +1,4 @@
-export type Page = 'dashboard' | 'nodes' | 'ai-inbounds' | 'users' | 'settings'
+export type Page = 'dashboard' | 'nodes' | 'ai-inbounds' | 'users' | 'control' | 'settings'
 export type Locale = 'en' | 'fa' | 'ru'
 
 export type Node = {
